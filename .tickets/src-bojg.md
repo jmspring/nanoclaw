@@ -1,6 +1,6 @@
 ---
 id: src-bojg
-status: open
+status: closed
 deps: [src-xqee]
 links: []
 created: 2026-03-13T21:03:16Z
