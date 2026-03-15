@@ -10,6 +10,19 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
+// Mock os.platform to return 'linux' so getRuntime() returns 'docker'
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      platform: () => 'linux',
+    },
+    platform: () => 'linux',
+  };
+});
+
 // Mock child_process — store the mock fn so tests can configure it
 const mockExecSync = vi.fn();
 vi.mock('child_process', () => ({

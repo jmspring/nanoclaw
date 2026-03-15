@@ -24,6 +24,7 @@ import {
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
+  getRuntime,
   PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
@@ -460,13 +461,19 @@ function recoverPendingMessages(): void {
   }
 }
 
-function ensureContainerSystemRunning(): void {
+async function ensureContainerSystemRunning(): Promise<void> {
   ensureContainerRuntimeRunning();
-  cleanupOrphans();
+  if (getRuntime() === 'jail') {
+    // @ts-expect-error jail-runtime.js is untyped
+    const jailRuntime = await import('../jail-runtime.js');
+    jailRuntime.cleanupOrphans();
+  } else {
+    cleanupOrphans();
+  }
 }
 
 async function main(): Promise<void> {
-  ensureContainerSystemRunning();
+  await ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
   loadState();

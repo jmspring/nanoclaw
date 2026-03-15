@@ -8,6 +8,19 @@ import os from 'os';
 
 import { logger } from './logger.js';
 
+export type RuntimeType = 'jail' | 'docker' | 'apple';
+
+/** Detect the container runtime to use. */
+export function getRuntime(): RuntimeType {
+  const env = process.env.NANOCLAW_RUNTIME?.toLowerCase();
+  if (env === 'jail' || env === 'docker' || env === 'apple') return env;
+  // Auto-detect based on platform
+  const platform = os.platform();
+  if (platform === 'freebsd') return 'jail';
+  if (platform === 'darwin') return 'apple';
+  return 'docker';
+}
+
 /** The container runtime binary name. */
 export const CONTAINER_RUNTIME_BIN = 'docker';
 
@@ -64,6 +77,12 @@ export function stopContainer(name: string): string {
 
 /** Ensure the container runtime is running, starting it if needed. */
 export function ensureContainerRuntimeRunning(): void {
+  const runtime = getRuntime();
+  if (runtime === 'jail') {
+    // Jail runtime validates itself (ZFS template, jail command) when jails are created
+    logger.info({ runtime }, 'Using FreeBSD jail runtime');
+    return;
+  }
   try {
     execSync(`${CONTAINER_RUNTIME_BIN} info`, {
       stdio: 'pipe',
@@ -102,6 +121,11 @@ export function ensureContainerRuntimeRunning(): void {
 
 /** Kill orphaned NanoClaw containers from previous runs. */
 export function cleanupOrphans(): void {
+  const runtime = getRuntime();
+  if (runtime === 'jail') {
+    // Jail cleanup handled by jail-runtime.js
+    return;
+  }
   try {
     const output = execSync(
       `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format '{{.Names}}'`,
