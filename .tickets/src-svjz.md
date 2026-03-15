@@ -1,6 +1,6 @@
 ---
 id: src-svjz
-status: open
+status: closed
 deps: [src-qblt]
 links: []
 created: 2026-03-13T21:03:16Z
