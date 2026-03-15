@@ -211,7 +211,107 @@ test('exec() — environment variables passed through to jailed process', async 
 });
 
 // ============================================================================
-// TEST 4: stop() + destroy() — jail removed, dataset destroyed, mounts cleaned
+// TEST 4: exec() — stderr captured correctly
+// ============================================================================
+test('exec() — stderr captured correctly', async () => {
+  const groupId = uniqueGroupId('stderr');
+  const mounts = [];
+
+  try {
+    await createJail(groupId, mounts);
+
+    // Run a command that outputs to stderr
+    const result = await execInJail(groupId, ['sh', '-c', 'echo "error to stderr" >&2']);
+
+    assertEqual(result.code, 0, 'Exit code should be 0');
+    assert(
+      result.stderr.includes('error to stderr'),
+      `Expected stderr to contain "error to stderr" but got: "${result.stderr}"`
+    );
+
+  } finally {
+    await destroyJail(groupId, mounts);
+  }
+});
+
+// ============================================================================
+// TEST 5: exec() — signals (SIGTERM) terminate jail process
+// ============================================================================
+test('exec() — signals (SIGTERM) terminate jail process', async () => {
+  const groupId = uniqueGroupId('signal');
+  const mounts = [];
+
+  try {
+    await createJail(groupId, mounts);
+
+    // Start a long-running process and send SIGTERM
+    const startTime = Date.now();
+    let wasInterrupted = false;
+
+    try {
+      const execPromise = execInJail(groupId, ['sleep', '30']);
+
+      // Wait a bit then send SIGTERM by aborting
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // The execInJail should support an AbortSignal or we need to test via timeout
+      // For now, test that signal option works
+      const controller = new AbortController();
+      const signalPromise = execInJail(groupId, ['sleep', '30'], { signal: controller.signal });
+
+      setTimeout(() => controller.abort(), 100);
+
+      await signalPromise;
+    } catch (error) {
+      wasInterrupted = true;
+    }
+
+    const elapsed = Date.now() - startTime;
+
+    assert(wasInterrupted, 'Signal test should have been interrupted by signal');
+    assert(elapsed < 5000, `Process should have been killed quickly, took ${elapsed}ms`);
+
+  } finally {
+    await destroyJail(groupId, mounts);
+  }
+});
+
+// ============================================================================
+// TEST 6: exec() — commands timeout correctly
+// ============================================================================
+test('exec() — commands timeout correctly', async () => {
+  const groupId = uniqueGroupId('timeout');
+  const mounts = [];
+
+  try {
+    await createJail(groupId, mounts);
+
+    const startTime = Date.now();
+    let wasInterrupted = false;
+
+    try {
+      // Run a command that would take 30 seconds, but with 500ms timeout
+      await execInJail(groupId, ['sleep', '30'], { timeout: 500 });
+    } catch (error) {
+      wasInterrupted = true;
+      assert(
+        error.message.includes('timed out') || error.message.includes('timeout'),
+        `Error should mention timeout, got: ${error.message}`
+      );
+    }
+
+    const elapsed = Date.now() - startTime;
+
+    assert(wasInterrupted, 'Timeout test should have been interrupted by timeout');
+    assert(elapsed < 5000, `Process should have timed out quickly, took ${elapsed}ms`);
+
+  } finally {
+    await destroyJail(groupId, mounts);
+  }
+});
+
+// ============================================================================
+// TEST 7: stop() + destroy() — jail removed, dataset destroyed, mounts cleaned (was TEST 4)
 // ============================================================================
 test('stop() + destroy() — jail removed, dataset destroyed, mounts cleaned', async () => {
   const groupId = uniqueGroupId('destroy');

@@ -270,13 +270,14 @@ export async function createJail(groupId, mounts = []) {
  * @param {Object} options.env - Environment variables
  * @param {string} options.cwd - Working directory inside jail
  * @param {number} options.timeout - Timeout in milliseconds
+ * @param {AbortSignal} options.signal - AbortSignal to cancel execution
  * @param {Function} options.onStdout - Callback for stdout data
  * @param {Function} options.onStderr - Callback for stderr data
  * @returns {Promise<{code: number, stdout: string, stderr: string}>}
  */
 export async function execInJail(groupId, command, options = {}) {
   const jailName = getJailName(groupId);
-  const { env = {}, cwd, timeout, onStdout, onStderr } = options;
+  const { env = {}, cwd, timeout, signal, onStdout, onStderr } = options;
 
   if (!isJailRunning(jailName)) {
     throw new Error(`Jail ${jailName} is not running`);
@@ -308,12 +309,47 @@ export async function execInJail(groupId, command, options = {}) {
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let aborted = false;
+    let settled = false;
+
+    /** Kill all processes in the jail to terminate execution */
+    const killJailProcesses = () => {
+      try {
+        // Kill all processes in the jail - this ensures the jailed process dies
+        execFileSync('sudo', ['jexec', jailName, 'kill', '-9', '-1'], {
+          stdio: 'pipe',
+          timeout: 5000,
+        });
+      } catch {
+        // Jail may have already stopped or no processes to kill
+      }
+      // Also kill the sudo wrapper process
+      proc.kill('SIGKILL');
+    };
 
     const timeoutId = timeout ? setTimeout(() => {
+      if (settled) return;
       timedOut = true;
-      log(`Execution timeout, killing process`, { jailName, timeout });
-      proc.kill('SIGKILL');
+      log(`Execution timeout, killing jail processes`, { jailName, timeout });
+      killJailProcesses();
     }, timeout) : null;
+
+    // Handle AbortSignal
+    const abortHandler = () => {
+      if (settled) return;
+      aborted = true;
+      log(`Execution aborted via signal`, { jailName });
+      killJailProcesses();
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        // Already aborted before we started
+        reject(new Error('Execution aborted'));
+        return;
+      }
+      signal.addEventListener('abort', abortHandler, { once: true });
+    }
 
     proc.stdout.on('data', (data) => {
       const chunk = data.toString();
@@ -328,7 +364,14 @@ export async function execInJail(groupId, command, options = {}) {
     });
 
     proc.on('close', (code) => {
+      settled = true;
       if (timeoutId) clearTimeout(timeoutId);
+      if (signal) signal.removeEventListener('abort', abortHandler);
+
+      if (aborted) {
+        reject(new Error('Execution aborted'));
+        return;
+      }
 
       if (timedOut) {
         reject(new Error(`Execution timed out after ${timeout}ms`));
@@ -340,7 +383,9 @@ export async function execInJail(groupId, command, options = {}) {
     });
 
     proc.on('error', (error) => {
+      settled = true;
       if (timeoutId) clearTimeout(timeoutId);
+      if (signal) signal.removeEventListener('abort', abortHandler);
       log(`Execution error`, { jailName, error: error.message });
       reject(error);
     });
