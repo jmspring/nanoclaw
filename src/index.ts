@@ -485,7 +485,10 @@ async function main(): Promise<void> {
   );
 
   // Graceful shutdown handlers
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
     await queue.shutdown(10000);
