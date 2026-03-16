@@ -369,6 +369,7 @@ export async function createJail(groupId, mounts = []) {
       'allow.raw_sockets',
       'allow.sysvipc',
       'enforce_statfs=1',
+      'mount.devfs',
     );
 
     log(`Starting jail`, { jailName, params: jailParams.slice(2) });
@@ -612,6 +613,9 @@ export async function cleanupJail(groupId, mounts = []) {
       log(`Warning: could not stop jail during cleanup: ${error.message}`);
     }
   }
+
+  // Unmount devfs first (required before nullfs unmounts and zfs destroy)
+  await sudoExec(['umount', jailPath + '/dev']).catch(() => {});
 
   // Unmount nullfs mounts
   if (mounts.length > 0) {
