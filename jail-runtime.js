@@ -350,9 +350,13 @@ export async function createJail(groupId, mounts = []) {
     // Mount nullfs filesystems
     await mountNullfs(mounts, jailPath);
 
-    // Create empty .claude.json for Claude Code (required before running as non-root)
+    // Create .claude directory and .claude.json for Claude Code (required before running as non-root)
+    await sudoExec(['mkdir', '-p', `${jailPath}/home/node/.claude`]);
     await sudoExec(['sh', '-c', `echo '{}' > ${jailPath}/home/node/.claude.json`]);
-    await sudoExec(['chmod', '644', `${jailPath}/home/node/.claude.json`]);
+    await sudoExec(['chown', '-R', '1000:1000', `${jailPath}/home/node`]);
+
+    // Ensure /tmp is writable by node user (entrypoint compiles TypeScript to /tmp/dist)
+    await sudoExec(['chmod', '1777', `${jailPath}/tmp`]);
 
     // Create the jail
     const jailParams = [
@@ -411,7 +415,7 @@ export async function execInJail(groupId, command, options = {}) {
   }
 
   return new Promise((resolve, reject) => {
-    const args = ['jexec'];
+    const args = ['jexec', '-u', 'node'];
 
     // FreeBSD jexec supports -d for working directory
     if (cwd) {
@@ -619,7 +623,7 @@ export async function cleanupJail(groupId, mounts = []) {
   }
 
   // Unmount devfs first (required before nullfs unmounts and zfs destroy)
-  await sudoExec(['umount', jailPath + '/dev']).catch(() => {});
+  await sudoExec(['umount', '-f', path.join(jailPath, 'dev')]).catch(() => {});
 
   // Unmount nullfs mounts
   if (mounts.length > 0) {
