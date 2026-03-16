@@ -18,17 +18,6 @@ export const JAIL_CONFIG = {
   networkMode: 'inherit',
 };
 
-/** The jail command binary. */
-export const JAIL_RUNTIME_BIN = 'jail';
-
-/** Hostname jails use to reach the host machine. */
-export const JAIL_HOST_GATEWAY = 'localhost';
-
-/**
- * Address the credential proxy binds to.
- * FreeBSD jails with network inheritance see host's loopback.
- */
-export const PROXY_BIND_HOST = process.env.CREDENTIAL_PROXY_HOST || '127.0.0.1';
 
 /** Logging helper with prefix */
 function log(message, data = {}) {
@@ -103,22 +92,6 @@ function datasetExists(dataset) {
   } catch {
     return false;
   }
-}
-
-/** CLI args needed for the jail to resolve the host gateway (not needed with inherit) */
-export function hostGatewayArgs() {
-  // With network inheritance, jails can reach localhost directly
-  return [];
-}
-
-/** Returns mount specification for a readonly nullfs mount */
-export function readonlyMountSpec(hostPath, jailPath) {
-  return { hostPath, jailPath, readonly: true };
-}
-
-/** Returns mount specification for a read-write nullfs mount */
-export function writableMountSpec(hostPath, jailPath) {
-  return { hostPath, jailPath, readonly: false };
 }
 
 /**
@@ -628,30 +601,6 @@ export async function cleanupJail(groupId, mounts = []) {
   // Unmount nullfs mounts
   if (mounts.length > 0) {
     await unmountAll(mounts, jailPath);
-  } else {
-    // Try to unmount any remaining mounts by parsing fstab or using mount output
-    try {
-      const mountOutput = execFileSync('mount', ['-t', 'nullfs'], { encoding: 'utf-8' });
-      const jailMounts = mountOutput.split('\n')
-        .filter(line => line.includes(jailPath))
-        .map(line => {
-          const match = line.match(/on (.+?) \(/);
-          return match ? match[1] : null;
-        })
-        .filter(Boolean)
-        .reverse();
-
-      for (const mountPoint of jailMounts) {
-        try {
-          await sudoExec(['umount', '-f', mountPoint]);
-          log(`Unmounted ${mountPoint}`);
-        } catch (error) {
-          log(`Warning: could not unmount ${mountPoint}: ${error.message}`);
-        }
-      }
-    } catch (error) {
-      log(`Warning: could not check for remaining mounts: ${error.message}`);
-    }
   }
 
   // Destroy ZFS dataset
@@ -683,18 +632,8 @@ export async function cleanupJail(groupId, mounts = []) {
  * @param {Array} mounts - Mount specifications
  */
 export async function destroyJail(groupId, mounts = []) {
-  const jailName = getJailName(groupId);
-  log(`Destroying jail`, { jailName });
-
-  await stopJail(groupId);
+  // cleanupJail handles stopping if needed, unmounting, and ZFS cleanup
   await cleanupJail(groupId, mounts);
-
-  log(`Jail destroyed`, { jailName });
-}
-
-/** Returns the command to stop a jail by name. */
-export function stopJailCommand(jailName) {
-  return `sudo jail -r ${jailName}`;
 }
 
 /** Ensure the jail subsystem is available. */
@@ -818,65 +757,105 @@ export function cleanupOrphans() {
 }
 
 /**
- * Full jail lifecycle: create, run command, capture output, destroy.
- * This is the primary entry point for running agent commands in jails.
- * @param {string} groupId - The group identifier
- * @param {Array} mounts - Mount specifications
- * @param {string[]} command - Command to execute
- * @param {Object} options - Execution options
- * @param {Object} options.env - Environment variables
- * @param {string} options.cwd - Working directory inside jail
- * @param {Function} options.onStdout - Callback for stdout data
- * @param {Function} options.onStderr - Callback for stderr data
- * @param {number} options.timeout - Timeout in milliseconds
- * @returns {Promise<{code: number, stdout: string, stderr: string}>}
+ * Clean up all running NanoClaw jails.
+ * Called during shutdown to ensure devfs is unmounted and ZFS datasets can be destroyed.
+ * @returns {Promise<void>}
  */
-export async function runInJail(groupId, mounts, command, options = {}) {
+export async function cleanupAllJails() {
+  log('Cleaning up all NanoClaw jails...');
+
+  let jailNames = [];
   try {
-    await createJail(groupId, mounts);
-    const result = await execInJail(groupId, command, options);
-    return result;
-  } finally {
-    await destroyJail(groupId, mounts);
+    const output = execFileSync('sudo', ['jls', '-N', 'name'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      encoding: 'utf-8',
+    });
+    jailNames = output.trim().split('\n').filter(line => line.startsWith('nanoclaw_'));
+  } catch (err) {
+    // No jails running or jls failed
+    log('No running jails found or jls failed', { error: err.message });
+    return;
   }
+
+  if (jailNames.length === 0) {
+    log('No NanoClaw jails to clean up');
+    return;
+  }
+
+  log(`Found ${jailNames.length} jail(s) to clean up`, { names: jailNames });
+
+  for (const jailName of jailNames) {
+    const jailPath = getJailPath(jailName);
+    const dataset = `${JAIL_CONFIG.jailsDataset}/${jailName}`;
+    const fstabPath = path.join(JAIL_CONFIG.jailsPath, `${jailName}.fstab`);
+
+    // Step 1: Stop the jail
+    try {
+      log(`Stopping jail`, { jailName });
+      await sudoExec(['jail', '-r', jailName], { timeout: 15000 });
+      log(`Stopped jail`, { jailName });
+    } catch (err) {
+      log(`Failed to stop jail, continuing cleanup`, { jailName, error: err.message });
+    }
+
+    // Step 2: Unmount devfs
+    try {
+      await sudoExec(['umount', '-f', path.join(jailPath, 'dev')], { timeout: 5000 });
+      log(`Unmounted devfs`, { jailName });
+    } catch (err) {
+      log(`Failed to unmount devfs, continuing`, { jailName, error: err.message });
+    }
+
+    // Step 3: Unmount all nullfs mounts under jailPath
+    try {
+      const mountOutput = execFileSync('mount', ['-t', 'nullfs'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      const jailMounts = mountOutput.split('\n')
+        .filter(line => line.includes(jailPath))
+        .map(line => {
+          const match = line.match(/on (.+?) \(/);
+          return match ? match[1] : null;
+        })
+        .filter(Boolean)
+        .reverse(); // Unmount in reverse order
+
+      for (const mountPoint of jailMounts) {
+        try {
+          await sudoExec(['umount', '-f', mountPoint], { timeout: 5000 });
+          log(`Unmounted nullfs`, { mountPoint });
+        } catch (err) {
+          log(`Failed to unmount nullfs, continuing`, { mountPoint, error: err.message });
+        }
+      }
+    } catch (err) {
+      log(`Failed to list/unmount nullfs mounts`, { jailName, error: err.message });
+    }
+
+    // Step 4: Destroy ZFS dataset
+    if (datasetExists(dataset)) {
+      try {
+        await sudoExec(['zfs', 'destroy', '-r', dataset], { timeout: 30000 });
+        log(`Destroyed ZFS dataset`, { dataset });
+      } catch (err) {
+        log(`Failed to destroy ZFS dataset, continuing`, { dataset, error: err.message });
+      }
+    }
+
+    // Step 5: Remove fstab file
+    if (fs.existsSync(fstabPath)) {
+      try {
+        fs.unlinkSync(fstabPath);
+        log(`Removed fstab file`, { fstabPath });
+      } catch (err) {
+        log(`Failed to remove fstab file, continuing`, { fstabPath, error: err.message });
+      }
+    }
+
+    log(`Completed cleanup for jail`, { jailName });
+  }
+
+  log(`Finished cleaning up all NanoClaw jails`);
 }
 
-// Compatibility exports matching container-runtime.ts interface
-export const CONTAINER_RUNTIME_BIN = JAIL_RUNTIME_BIN;
-export const CONTAINER_HOST_GATEWAY = JAIL_HOST_GATEWAY;
-export const readonlyMountArgs = (hostPath, jailPath) => readonlyMountSpec(hostPath, jailPath);
-export const stopContainer = stopJailCommand;
-export const ensureContainerRuntimeRunning = ensureJailRuntimeRunning;
-
-export default {
-  JAIL_CONFIG,
-  JAIL_RUNTIME_BIN,
-  JAIL_HOST_GATEWAY,
-  PROXY_BIND_HOST,
-  JAIL_MOUNT_LAYOUT,
-  sanitizeJailName,
-  getJailName,
-  isJailRunning,
-  hostGatewayArgs,
-  readonlyMountSpec,
-  writableMountSpec,
-  buildJailMounts,
-  ensureHostDirectories,
-  createJailWithPaths,
-  createJail,
-  execInJail,
-  spawnInJail,
-  stopJail,
-  cleanupJail,
-  destroyJail,
-  stopJailCommand,
-  ensureJailRuntimeRunning,
-  cleanupOrphans,
-  runInJail,
-  // Compatibility
-  CONTAINER_RUNTIME_BIN: JAIL_RUNTIME_BIN,
-  CONTAINER_HOST_GATEWAY: JAIL_HOST_GATEWAY,
-  readonlyMountArgs: readonlyMountSpec,
-  stopContainer: stopJailCommand,
-  ensureContainerRuntimeRunning: ensureJailRuntimeRunning,
-};

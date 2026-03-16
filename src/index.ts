@@ -490,6 +490,18 @@ async function main(): Promise<void> {
     proxyServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
+
+    // Clean up jails if using jail runtime
+    if (getRuntime() === 'jail') {
+      try {
+        // @ts-expect-error jail-runtime.js is untyped
+        const jailRuntime = await import('../jail-runtime.js');
+        await jailRuntime.cleanupAllJails();
+      } catch (err) {
+        logger.warn({ err }, 'Failed to clean up jails during shutdown');
+      }
+    }
+
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
