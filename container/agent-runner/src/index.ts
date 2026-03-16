@@ -393,6 +393,7 @@ async function runQuery(
     prompt: stream,
     options: {
       cwd: '/workspace/group',
+      pathToClaudeCodeExecutable: '/app/node_modules/@anthropic-ai/claude-agent-sdk/cli.js',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
