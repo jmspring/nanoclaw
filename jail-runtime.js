@@ -24,6 +24,12 @@ export const JAIL_CONFIG = {
   jailHostIP: '10.99.0.1',
   jailIP: '10.99.0.2',
   jailNetmask: '30',
+  // Resource limits (rctl) - prevents runaway agents from crashing the host
+  resourceLimits: {
+    memoryuse: process.env.NANOCLAW_JAIL_MEMORY_LIMIT || '2G',   // Memory limit
+    maxproc: process.env.NANOCLAW_JAIL_MAXPROC || '100',          // Max processes (prevents fork bombs)
+    pcpu: process.env.NANOCLAW_JAIL_PCPU || '80',                 // CPU percentage limit
+  },
 };
 
 /** Track assigned epair numbers for cleanup */
@@ -59,6 +65,46 @@ function getJailPath(jailName) {
 /** Get the fstab path for a jail */
 function getFstabPath(jailName) {
   return path.join(JAIL_CONFIG.jailsPath, `${jailName}.fstab`);
+}
+
+/**
+ * Apply rctl resource limits to a jail.
+ * @param {string} jailName - The jail name
+ */
+async function applyRctlLimits(jailName) {
+  const limits = JAIL_CONFIG.resourceLimits;
+
+  try {
+    // Add memory limit
+    await sudoExec(['rctl', '-a', `jail:${jailName}:memoryuse:deny=${limits.memoryuse}`]);
+    log(`Applied memory limit`, { jailName, limit: limits.memoryuse });
+
+    // Add process limit (prevents fork bombs)
+    await sudoExec(['rctl', '-a', `jail:${jailName}:maxproc:deny=${limits.maxproc}`]);
+    log(`Applied process limit`, { jailName, limit: limits.maxproc });
+
+    // Add CPU limit
+    await sudoExec(['rctl', '-a', `jail:${jailName}:pcpu:deny=${limits.pcpu}`]);
+    log(`Applied CPU limit`, { jailName, limit: limits.pcpu });
+  } catch (error) {
+    log(`Warning: could not apply rctl limits: ${error.message}`, { jailName });
+    // Don't fail jail creation if rctl is not available - just warn
+  }
+}
+
+/**
+ * Remove rctl resource limits from a jail.
+ * @param {string} jailName - The jail name
+ */
+async function removeRctlLimits(jailName) {
+  try {
+    // Remove all rctl rules for this jail
+    await sudoExec(['rctl', '-r', `jail:${jailName}`]);
+    log(`Removed rctl limits`, { jailName });
+  } catch (error) {
+    // Jail may not exist or rctl rules may not be set - ignore
+    log(`Note: could not remove rctl limits (may not exist): ${error.message}`, { jailName });
+  }
 }
 
 /** Execute a command with sudo, returning a promise */
@@ -323,16 +369,43 @@ function buildFstab(mounts, jailPath) {
 
 /** Create mount point directories inside the jail */
 async function createMountPoints(mounts, jailPath) {
+  const resolvedJailRoot = path.resolve(jailPath);
+
   for (const mount of mounts) {
-    const targetPath = path.join(jailPath, mount.jailPath);
+    const targetPath = path.resolve(jailPath, mount.jailPath);
+
+    // Paranoid check: target must be within jail root (defense in depth)
+    if (!targetPath.startsWith(resolvedJailRoot + path.sep) && targetPath !== resolvedJailRoot) {
+      throw new Error(`Mount target escapes jail root: ${mount.jailPath}`);
+    }
+
+    // Reject any path containing '..' after canonicalization
+    if (mount.jailPath.includes('..')) {
+      throw new Error(`Mount path contains path traversal: ${mount.jailPath}`);
+    }
+
     await sudoExec(['mkdir', '-p', targetPath]);
   }
 }
 
 /** Mount all nullfs mounts for a jail */
 async function mountNullfs(mounts, jailPath) {
+  const resolvedJailRoot = path.resolve(jailPath);
+
   for (const mount of mounts) {
-    const targetPath = path.join(jailPath, mount.jailPath);
+    // Canonicalize paths with realpath-style resolution
+    const targetPath = path.resolve(jailPath, mount.jailPath);
+
+    // Paranoid check: target must be within jail root (defense in depth)
+    if (!targetPath.startsWith(resolvedJailRoot + path.sep) && targetPath !== resolvedJailRoot) {
+      throw new Error(`Mount target escapes jail root: ${mount.jailPath}`);
+    }
+
+    // Reject any path containing '..' after canonicalization
+    if (mount.jailPath.includes('..')) {
+      throw new Error(`Mount path contains path traversal: ${mount.jailPath}`);
+    }
+
     const opts = mount.readonly ? 'ro' : 'rw';
     try {
       await sudoExec(['mount_nullfs', '-o', opts, mount.hostPath, targetPath]);
@@ -484,10 +557,14 @@ export async function createJail(groupId, mounts = []) {
       'allow.sysvipc',
       'enforce_statfs=1',
       'mount.devfs',
+      'devfs_ruleset=10', // Apply restrictive devfs ruleset (see etc/devfs.rules)
     );
 
     log(`Starting jail`, { jailName, params: jailParams.slice(2) });
     await sudoExec(jailParams);
+
+    // Apply resource limits to prevent runaway processes
+    await applyRctlLimits(jailName);
 
     // Configure networking inside the vnet jail
     if (JAIL_CONFIG.networkMode === 'restricted' && epairInfo) {
@@ -735,6 +812,9 @@ export async function cleanupJail(groupId, mounts = []) {
 
   log(`Cleaning up jail`, { jailName });
 
+  // Remove rctl limits before stopping jail
+  await removeRctlLimits(jailName);
+
   // Stop jail if running
   if (isJailRunning(jailName)) {
     try {
@@ -846,6 +926,14 @@ export function cleanupOrphans() {
       .filter(line => line.startsWith('nanoclaw_'));
 
     for (const jailName of orphans) {
+      // Remove rctl limits for orphaned jail
+      try {
+        execFileSync('sudo', ['rctl', '-r', `jail:${jailName}`], { stdio: 'pipe', timeout: 5000 });
+        log(`Removed rctl limits for orphaned jail`, { jailName });
+      } catch {
+        // May not have rctl rules - ignore
+      }
+
       try {
         log(`Stopping orphaned jail`, { jailName });
         execFileSync('sudo', ['jail', '-r', jailName], { stdio: 'pipe', timeout: 15000 });
@@ -977,6 +1065,14 @@ export async function cleanupAllJails() {
     const jailPath = getJailPath(jailName);
     const dataset = `${JAIL_CONFIG.jailsDataset}/${jailName}`;
     const fstabPath = path.join(JAIL_CONFIG.jailsPath, `${jailName}.fstab`);
+
+    // Step 0: Remove rctl limits
+    try {
+      await sudoExec(['rctl', '-r', `jail:${jailName}`], { timeout: 5000 });
+      log(`Removed rctl limits`, { jailName });
+    } catch (err) {
+      log(`Failed to remove rctl limits, continuing cleanup`, { jailName, error: err.message });
+    }
 
     // Step 1: Stop the jail
     try {

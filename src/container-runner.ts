@@ -382,13 +382,25 @@ async function runJailAgent(
   const mountPaths = buildJailMountPaths(group, input.isMain);
 
   // Build environment variables
-  // Jails talk directly to api.anthropic.com, not through the credential proxy
+  // Route API traffic through the credential proxy (jails never see real secrets)
+  // The proxy runs on the host at 10.99.0.1:3001 (default CREDENTIAL_PROXY_PORT)
   const env: Record<string, string> = {
     TZ: TIMEZONE,
     HOME: '/home/node',
     PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
+    ANTHROPIC_BASE_URL: `http://${jailRuntime.JAIL_CONFIG.jailHostIP}:${CREDENTIAL_PROXY_PORT}`,
   };
+
+  // Mirror the host's auth method with a placeholder value.
+  // API key mode: SDK sends x-api-key, proxy replaces with real key.
+  // OAuth mode:   SDK exchanges placeholder token for temp API key,
+  //               proxy injects real OAuth token on that exchange request.
+  const authMode = detectAuthMode();
+  if (authMode === 'api-key') {
+    env.ANTHROPIC_API_KEY = 'placeholder';
+  } else {
+    env.CLAUDE_CODE_OAUTH_TOKEN = 'placeholder';
+  }
 
   logger.info(
     { group: group.name, mountPaths },
