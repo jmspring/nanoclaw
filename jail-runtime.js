@@ -350,6 +350,10 @@ export async function createJail(groupId, mounts = []) {
     // Mount nullfs filesystems
     await mountNullfs(mounts, jailPath);
 
+    // Create empty .claude.json for Claude Code (required before running as non-root)
+    await sudoExec(['sh', '-c', `echo '{}' > ${jailPath}/home/node/.claude.json`]);
+    await sudoExec(['chmod', '644', `${jailPath}/home/node/.claude.json`]);
+
     // Create the jail
     const jailParams = [
       'jail', '-c',
@@ -533,7 +537,7 @@ export function spawnInJail(groupId, command, options = {}) {
   const jailName = getJailName(groupId);
   const { env = {}, cwd } = options;
 
-  const args = ['jexec'];
+  const args = ['jexec', '-u', 'node'];
 
   // FreeBSD jexec supports -d for working directory
   if (cwd) {
