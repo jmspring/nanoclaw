@@ -15,85 +15,19 @@ export const JAIL_CONFIG = {
   jailsPath: '/home/jims/code/nanoclaw/jails',
   workspacesPath: '/home/jims/code/nanoclaw/workspaces',
   ipcPath: '/home/jims/code/nanoclaw/ipc',
-  // Network mode: "inherit" (ip4=inherit) or "restricted" (lo1 with pf)
+  // Network mode: "inherit" (ip4=inherit) or "restricted" (vnet with epair and pf)
   networkMode: process.env.NANOCLAW_JAIL_NETWORK_MODE || 'inherit',
   // Jail network configuration (used when networkMode === 'restricted')
-  jailInterface: 'lo1',
-  jailNetworkPrefix: '10.99.0',
-  jailGateway: '10.99.0.1',
+  // Each jail gets its own /30 subnet via epair:
+  //   - Host side (epairNa): 10.99.0.1/30 (gateway)
+  //   - Jail side (epairNb): 10.99.0.2/30
+  jailHostIP: '10.99.0.1',
+  jailIP: '10.99.0.2',
+  jailNetmask: '30',
 };
 
-/** Track assigned jail IPs to prevent collisions */
-const assignedJailIPs = new Map(); // groupId -> IP number (1-254)
-
-
-/**
- * Generate a deterministic IP number (2-254) from a groupId.
- * Uses a simple hash to map groupId to a number in range.
- * @param {string} groupId - The group identifier
- * @returns {number} - IP number (2-254)
- */
-function hashGroupIdToIP(groupId) {
-  let hash = 0;
-  for (let i = 0; i < groupId.length; i++) {
-    const char = groupId.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32-bit integer
-  }
-  // Map to range 2-254 (1 is gateway, 255 is broadcast)
-  return Math.abs(hash % 253) + 2;
-}
-
-/**
- * Assign a unique IP to a jail, avoiding collisions with other running jails.
- * @param {string} groupId - The group identifier
- * @returns {number} - Assigned IP number (2-254)
- */
-function assignJailIP(groupId) {
-  // Check if already assigned
-  if (assignedJailIPs.has(groupId)) {
-    return assignedJailIPs.get(groupId);
-  }
-
-  // Get deterministic starting point from hash
-  let ipNum = hashGroupIdToIP(groupId);
-  const usedIPs = new Set(assignedJailIPs.values());
-
-  // Find an unused IP, starting from hash result
-  let attempts = 0;
-  while (usedIPs.has(ipNum) && attempts < 253) {
-    ipNum = (ipNum % 253) + 2; // Wrap around within 2-254
-    attempts++;
-  }
-
-  if (attempts >= 253) {
-    throw new Error('No available IP addresses in jail network (all 253 IPs in use)');
-  }
-
-  assignedJailIPs.set(groupId, ipNum);
-  return ipNum;
-}
-
-/**
- * Release a jail's assigned IP.
- * @param {string} groupId - The group identifier
- */
-function releaseJailIP(groupId) {
-  assignedJailIPs.delete(groupId);
-}
-
-/**
- * Get the full IP address for a jail.
- * @param {string} groupId - The group identifier
- * @returns {string} - Full IP address (e.g., "10.99.0.42")
- */
-function getJailIPAddress(groupId) {
-  const ipNum = assignedJailIPs.get(groupId);
-  if (!ipNum) {
-    throw new Error(`No IP assigned for groupId: ${groupId}`);
-  }
-  return `${JAIL_CONFIG.jailNetworkPrefix}.${ipNum}`;
-}
+/** Track assigned epair numbers for cleanup */
+const assignedEpairs = new Map(); // groupId -> epair number (e.g., 0 for epair0a/epair0b)
 
 /** Logging helper with prefix */
 function log(message, data = {}) {
@@ -151,107 +85,89 @@ function sudoExecSync(args, options = {}) {
 }
 
 /**
- * Ensure the lo1 interface exists and has the gateway IP configured.
- * Called once per session, not per jail.
+ * Create an epair interface pair for a vnet jail.
+ * @param {string} groupId - The group identifier (for tracking)
+ * @returns {Promise<{epairNum: number, hostIface: string, jailIface: string}>}
  */
-async function ensureJailInterface() {
-  const iface = JAIL_CONFIG.jailInterface;
-  const gateway = JAIL_CONFIG.jailGateway;
+async function createEpair(groupId) {
+  // Create epair - FreeBSD returns the name (e.g., "epair0")
+  const result = await sudoExec(['ifconfig', 'epair', 'create']);
+  const epairName = result.stdout.trim(); // e.g., "epair0a"
 
-  // Try to create lo1 (ignore error if it already exists)
-  try {
-    await sudoExec(['ifconfig', iface, 'create']);
-    log(`Created interface ${iface}`);
-  } catch {
-    // Interface already exists, which is fine
+  // Extract the number from epair0a -> 0
+  const match = epairName.match(/epair(\d+)a/);
+  if (!match) {
+    throw new Error(`Unexpected epair name format: ${epairName}`);
   }
+  const epairNum = parseInt(match[1], 10);
 
-  // Check if gateway IP is already configured
-  try {
-    const output = execFileSync('ifconfig', [iface], { encoding: 'utf-8', stdio: 'pipe' });
-    if (output.includes(gateway)) {
-      log(`Interface ${iface} already has gateway ${gateway}`);
-      return;
-    }
-  } catch {
-    // Interface might not exist yet, continue to configure
-  }
+  const hostIface = `epair${epairNum}a`;
+  const jailIface = `epair${epairNum}b`;
 
-  // Add the gateway IP
+  // Configure host side with gateway IP
+  await sudoExec(['ifconfig', hostIface, `${JAIL_CONFIG.jailHostIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
+
+  // Track epair for cleanup
+  assignedEpairs.set(groupId, epairNum);
+
+  log(`Created epair`, { groupId, epairNum, hostIface, jailIface });
+  return { epairNum, hostIface, jailIface };
+}
+
+/**
+ * Configure networking inside a vnet jail after it starts.
+ * @param {string} jailName - The jail name
+ * @param {string} jailIface - The jail-side interface name (e.g., "epair0b")
+ */
+async function configureJailNetwork(jailName, jailIface) {
+  // Configure the jail's interface
+  await sudoExec(['jexec', jailName, 'ifconfig', jailIface, `${JAIL_CONFIG.jailIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
+
+  // Add default route via the host
+  await sudoExec(['jexec', jailName, 'route', 'add', 'default', JAIL_CONFIG.jailHostIP]);
+
+  log(`Configured jail network`, { jailName, jailIface, ip: JAIL_CONFIG.jailIP, gateway: JAIL_CONFIG.jailHostIP });
+}
+
+/**
+ * Destroy an epair interface pair.
+ * @param {number} epairNum - The epair number
+ */
+async function destroyEpair(epairNum) {
+  const hostIface = `epair${epairNum}a`;
   try {
-    await sudoExec(['ifconfig', iface, 'inet', `${gateway}/24`]);
-    log(`Configured ${iface} with gateway ${gateway}/24`);
+    // Destroying the 'a' side destroys both sides
+    await sudoExec(['ifconfig', hostIface, 'destroy']);
+    log(`Destroyed epair`, { epairNum });
   } catch (error) {
-    // May already be set, check and ignore
-    if (!error.message.includes('File exists')) {
-      log(`Warning: could not configure gateway IP: ${error.message}`);
-    }
+    log(`Warning: could not destroy epair: ${error.message}`, { epairNum });
   }
 }
 
 /**
- * Add an IP alias for a jail on the lo1 interface.
- * @param {string} ipAddress - Full IP address (e.g., "10.99.0.42")
+ * Release a jail's assigned epair and destroy it.
+ * @param {string} groupId - The group identifier
  */
-async function addJailIPAlias(ipAddress) {
-  const iface = JAIL_CONFIG.jailInterface;
-  try {
-    await sudoExec(['ifconfig', iface, 'alias', `${ipAddress}/32`]);
-    log(`Added IP alias ${ipAddress}/32 on ${iface}`);
-  } catch (error) {
-    if (!error.message.includes('File exists')) {
-      throw error;
-    }
-    // Alias already exists, which is fine
-    log(`IP alias ${ipAddress}/32 already exists on ${iface}`);
-  }
-}
-
-/**
- * Remove an IP alias from the lo1 interface.
- * @param {string} ipAddress - Full IP address (e.g., "10.99.0.42")
- */
-async function removeJailIPAlias(ipAddress) {
-  const iface = JAIL_CONFIG.jailInterface;
-  try {
-    await sudoExec(['ifconfig', iface, '-alias', ipAddress]);
-    log(`Removed IP alias ${ipAddress} from ${iface}`);
-  } catch (error) {
-    // Ignore errors - alias may not exist
-    log(`Could not remove IP alias ${ipAddress}: ${error.message}`);
+async function releaseEpair(groupId) {
+  const epairNum = assignedEpairs.get(groupId);
+  if (epairNum !== undefined) {
+    await destroyEpair(epairNum);
+    assignedEpairs.delete(groupId);
   }
 }
 
 /**
  * Setup resolv.conf in the jail for DNS resolution.
- * Points to the jail gateway which should run a local resolver.
+ * Copies the host's /etc/resolv.conf so the jail uses the same DNS servers.
  * @param {string} jailPath - Path to the jail root
  */
 async function setupJailResolv(jailPath) {
   const resolvPath = path.join(jailPath, 'etc', 'resolv.conf');
-  const gateway = JAIL_CONFIG.jailGateway;
 
-  // Check if host has a local resolver (local_unbound)
-  let useHostResolver = false;
   try {
     const hostResolv = fs.readFileSync('/etc/resolv.conf', 'utf-8');
-    if (hostResolv.includes('127.0.0.1') || hostResolv.includes('::1')) {
-      useHostResolver = true;
-    }
-  } catch {
-    // Can't read host resolv.conf, use gateway
-  }
-
-  // Create resolv.conf content pointing to gateway
-  // The gateway (host) should forward DNS queries appropriately
-  const content = `# Generated by NanoClaw jail-runtime
-# DNS queries go through the jail gateway (host)
-nameserver ${gateway}
-`;
-
-  try {
-    await sudoExec(['sh', '-c', `cat > ${resolvPath} << 'EOF'\n${content}EOF`]);
-    log(`Created jail resolv.conf pointing to ${gateway}`);
+    await sudoExec(['sh', '-c', `cat > ${resolvPath} << 'RESOLV'\n${hostResolv}\nRESOLV`]);
+    log(`Copied host resolv.conf to jail`);
   } catch (error) {
     log(`Warning: could not create jail resolv.conf: ${error.message}`);
   }
@@ -533,19 +449,12 @@ export async function createJail(groupId, mounts = []) {
     // Ensure /tmp is writable by node user (entrypoint compiles TypeScript to /tmp/dist)
     await sudoExec(['chmod', '1777', `${jailPath}/tmp`]);
 
-    // Network setup for restricted mode
-    let jailIP = null;
+    // Network setup for restricted mode (vnet with epair)
+    let epairInfo = null;
     if (JAIL_CONFIG.networkMode === 'restricted') {
-      // Ensure lo1 interface exists with gateway IP
-      await ensureJailInterface();
-
-      // Assign unique IP to this jail
-      const ipNum = assignJailIP(groupId);
-      jailIP = `${JAIL_CONFIG.jailNetworkPrefix}.${ipNum}`;
-      log(`Assigned jail IP`, { groupId, jailIP });
-
-      // Add IP alias on lo1
-      await addJailIPAlias(jailIP);
+      // Create epair interface pair
+      epairInfo = await createEpair(groupId);
+      log(`Created epair for jail`, { groupId, ...epairInfo });
 
       // Setup resolv.conf for DNS
       await setupJailResolv(jailPath);
@@ -564,8 +473,9 @@ export async function createJail(groupId, mounts = []) {
     if (JAIL_CONFIG.networkMode === 'inherit') {
       jailParams.push('ip4=inherit', 'ip6=inherit');
     } else if (JAIL_CONFIG.networkMode === 'restricted') {
-      // Use dedicated IP on lo1 interface
-      jailParams.push(`ip4.addr=${JAIL_CONFIG.jailInterface}|${jailIP}`);
+      // Use vnet with epair interface
+      jailParams.push('vnet');
+      jailParams.push(`vnet.interface=${epairInfo.jailIface}`);
     }
 
     // Allow certain sysctls for compatibility
@@ -578,6 +488,11 @@ export async function createJail(groupId, mounts = []) {
 
     log(`Starting jail`, { jailName, params: jailParams.slice(2) });
     await sudoExec(jailParams);
+
+    // Configure networking inside the vnet jail
+    if (JAIL_CONFIG.networkMode === 'restricted' && epairInfo) {
+      await configureJailNetwork(jailName, epairInfo.jailIface);
+    }
 
     log(`Jail created successfully`, { jailName });
     return jailName;
@@ -829,15 +744,9 @@ export async function cleanupJail(groupId, mounts = []) {
     }
   }
 
-  // Remove IP alias if in restricted network mode
-  if (JAIL_CONFIG.networkMode === 'restricted' && assignedJailIPs.has(groupId)) {
-    try {
-      const jailIP = getJailIPAddress(groupId);
-      await removeJailIPAlias(jailIP);
-    } catch (error) {
-      log(`Warning: could not remove IP alias: ${error.message}`);
-    }
-    releaseJailIP(groupId);
+  // Destroy epair if in restricted network mode
+  if (JAIL_CONFIG.networkMode === 'restricted' && assignedEpairs.has(groupId)) {
+    await releaseEpair(groupId);
   }
 
   // Unmount devfs first (required before nullfs unmounts and zfs destroy)
@@ -993,34 +902,38 @@ export function cleanupOrphans() {
       }
     }
 
-    // Clean up any orphan IP aliases on lo1 (for restricted network mode)
-    if (JAIL_CONFIG.networkMode === 'restricted' && orphans.length > 0) {
+    // Clean up orphan epair interfaces (for restricted network mode)
+    if (JAIL_CONFIG.networkMode === 'restricted') {
       try {
-        const ifconfigOutput = execFileSync('ifconfig', [JAIL_CONFIG.jailInterface], {
+        // Find all epair interfaces
+        const ifconfigOutput = execFileSync('ifconfig', ['-l'], {
           encoding: 'utf-8',
           stdio: ['pipe', 'pipe', 'pipe'],
         });
-        // Find all IPs in our jail network range (10.99.0.X where X != 1)
-        const ipRegex = new RegExp(`inet (${JAIL_CONFIG.jailNetworkPrefix}\\.(\\d+))`, 'g');
-        let match;
-        while ((match = ipRegex.exec(ifconfigOutput)) !== null) {
-          const ip = match[1];
-          const lastOctet = parseInt(match[2], 10);
-          // Don't remove the gateway IP (x.x.x.1)
-          if (lastOctet !== 1) {
-            try {
-              execFileSync('sudo', ['ifconfig', JAIL_CONFIG.jailInterface, '-alias', ip], {
-                stdio: 'pipe',
-                timeout: 5000,
-              });
-              log(`Removed orphan IP alias`, { ip });
-            } catch {
-              log(`Could not remove orphan IP alias`, { ip });
+        const interfaces = ifconfigOutput.trim().split(/\s+/);
+        const epairRegex = /^epair(\d+)a$/;
+
+        for (const iface of interfaces) {
+          const match = iface.match(epairRegex);
+          if (match) {
+            const epairNum = parseInt(match[1], 10);
+            // Check if this epair is tracked (if not, it's orphaned)
+            const isTracked = Array.from(assignedEpairs.values()).includes(epairNum);
+            if (!isTracked) {
+              try {
+                execFileSync('sudo', ['ifconfig', iface, 'destroy'], {
+                  stdio: 'pipe',
+                  timeout: 5000,
+                });
+                log(`Destroyed orphan epair`, { epairNum });
+              } catch {
+                log(`Could not destroy orphan epair`, { epairNum });
+              }
             }
           }
         }
       } catch {
-        // Interface may not exist or no aliases - that's fine
+        // No epairs or error checking - that's fine
       }
     }
 
@@ -1132,35 +1045,34 @@ export async function cleanupAllJails() {
     log(`Completed cleanup for jail`, { jailName });
   }
 
-  // Step 6: Clean up all jail IP aliases on lo1 (for restricted network mode)
+  // Step 6: Destroy all epair interfaces (for restricted network mode)
   if (JAIL_CONFIG.networkMode === 'restricted') {
     try {
-      const ifconfigOutput = execFileSync('ifconfig', [JAIL_CONFIG.jailInterface], {
+      // Find all epair interfaces
+      const ifconfigOutput = execFileSync('ifconfig', ['-l'], {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
       });
-      // Find all IPs in our jail network range (10.99.0.X where X != 1)
-      const ipRegex = new RegExp(`inet (${JAIL_CONFIG.jailNetworkPrefix}\\.(\\d+))`, 'g');
-      let match;
-      while ((match = ipRegex.exec(ifconfigOutput)) !== null) {
-        const ip = match[1];
-        const lastOctet = parseInt(match[2], 10);
-        // Don't remove the gateway IP (x.x.x.1)
-        if (lastOctet !== 1) {
+      const interfaces = ifconfigOutput.trim().split(/\s+/);
+      const epairRegex = /^epair(\d+)a$/;
+
+      for (const iface of interfaces) {
+        const match = iface.match(epairRegex);
+        if (match) {
           try {
-            await sudoExec(['ifconfig', JAIL_CONFIG.jailInterface, '-alias', ip]);
-            log(`Removed orphan IP alias`, { ip });
+            await sudoExec(['ifconfig', iface, 'destroy']);
+            log(`Destroyed epair`, { iface });
           } catch (err) {
-            log(`Failed to remove orphan IP alias`, { ip, error: err.message });
+            log(`Failed to destroy epair`, { iface, error: err.message });
           }
         }
       }
     } catch (err) {
-      log(`Failed to clean up IP aliases`, { error: err.message });
+      log(`Failed to clean up epair interfaces`, { error: err.message });
     }
 
-    // Clear the in-memory IP assignments
-    assignedJailIPs.clear();
+    // Clear the in-memory epair assignments
+    assignedEpairs.clear();
   }
 
   log(`Finished cleaning up all NanoClaw jails`);
