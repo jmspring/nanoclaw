@@ -6,7 +6,6 @@
 import { execFile, execFileSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 
 /** Jail configuration - adjust paths for your environment */
 export const JAIL_CONFIG = {
@@ -137,7 +136,7 @@ function buildFstab(mounts, jailPath) {
 async function createMountPoints(mounts, jailPath) {
   for (const mount of mounts) {
     const targetPath = path.join(jailPath, mount.jailPath);
-    fs.mkdirSync(targetPath, { recursive: true });
+    await sudoExec(['mkdir', '-p', targetPath]);
   }
 }
 
@@ -216,11 +215,6 @@ export async function createJail(groupId, mounts = []) {
     // Clone template snapshot
     log(`Cloning template`, { snapshot, dataset });
     await sudoExec(['zfs', 'clone', snapshot, dataset]);
-
-    // Make cloned filesystem writable by current user (zfs clone creates root-owned dirs)
-    const userInfo = os.userInfo();
-    log(`Chowning jail root to ${userInfo.username}`, { jailPath });
-    await sudoExec(['chown', '-R', `${userInfo.username}:wheel`, jailPath]);
 
     // Create mount points inside jail
     await createMountPoints(mounts, jailPath);
