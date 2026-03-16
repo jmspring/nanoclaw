@@ -15,9 +15,19 @@ export const JAIL_CONFIG = {
   jailsPath: '/home/jims/code/nanoclaw/jails',
   workspacesPath: '/home/jims/code/nanoclaw/workspaces',
   ipcPath: '/home/jims/code/nanoclaw/ipc',
-  networkMode: 'inherit',
+  // Network mode: "inherit" (ip4=inherit) or "restricted" (vnet with epair and pf)
+  networkMode: process.env.NANOCLAW_JAIL_NETWORK_MODE || 'inherit',
+  // Jail network configuration (used when networkMode === 'restricted')
+  // Each jail gets its own /30 subnet via epair:
+  //   - Host side (epairNa): 10.99.0.1/30 (gateway)
+  //   - Jail side (epairNb): 10.99.0.2/30
+  jailHostIP: '10.99.0.1',
+  jailIP: '10.99.0.2',
+  jailNetmask: '30',
 };
 
+/** Track assigned epair numbers for cleanup */
+const assignedEpairs = new Map(); // groupId -> epair number (e.g., 0 for epair0a/epair0b)
 
 /** Logging helper with prefix */
 function log(message, data = {}) {
@@ -71,6 +81,95 @@ function sudoExecSync(args, options = {}) {
     return execFileSync('sudo', args, { encoding: 'utf-8', timeout: 30000, ...options });
   } catch (error) {
     throw new Error(`sudo ${args.join(' ')} failed: ${error.message}`);
+  }
+}
+
+/**
+ * Create an epair interface pair for a vnet jail.
+ * @param {string} groupId - The group identifier (for tracking)
+ * @returns {Promise<{epairNum: number, hostIface: string, jailIface: string}>}
+ */
+async function createEpair(groupId) {
+  // Create epair - FreeBSD returns the name (e.g., "epair0")
+  const result = await sudoExec(['ifconfig', 'epair', 'create']);
+  const epairName = result.stdout.trim(); // e.g., "epair0a"
+
+  // Extract the number from epair0a -> 0
+  const match = epairName.match(/epair(\d+)a/);
+  if (!match) {
+    throw new Error(`Unexpected epair name format: ${epairName}`);
+  }
+  const epairNum = parseInt(match[1], 10);
+
+  const hostIface = `epair${epairNum}a`;
+  const jailIface = `epair${epairNum}b`;
+
+  // Configure host side with gateway IP
+  await sudoExec(['ifconfig', hostIface, `${JAIL_CONFIG.jailHostIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
+
+  // Track epair for cleanup
+  assignedEpairs.set(groupId, epairNum);
+
+  log(`Created epair`, { groupId, epairNum, hostIface, jailIface });
+  return { epairNum, hostIface, jailIface };
+}
+
+/**
+ * Configure networking inside a vnet jail after it starts.
+ * @param {string} jailName - The jail name
+ * @param {string} jailIface - The jail-side interface name (e.g., "epair0b")
+ */
+async function configureJailNetwork(jailName, jailIface) {
+  // Configure the jail's interface
+  await sudoExec(['jexec', jailName, 'ifconfig', jailIface, `${JAIL_CONFIG.jailIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
+
+  // Add default route via the host
+  await sudoExec(['jexec', jailName, 'route', 'add', 'default', JAIL_CONFIG.jailHostIP]);
+
+  log(`Configured jail network`, { jailName, jailIface, ip: JAIL_CONFIG.jailIP, gateway: JAIL_CONFIG.jailHostIP });
+}
+
+/**
+ * Destroy an epair interface pair.
+ * @param {number} epairNum - The epair number
+ */
+async function destroyEpair(epairNum) {
+  const hostIface = `epair${epairNum}a`;
+  try {
+    // Destroying the 'a' side destroys both sides
+    await sudoExec(['ifconfig', hostIface, 'destroy']);
+    log(`Destroyed epair`, { epairNum });
+  } catch (error) {
+    log(`Warning: could not destroy epair: ${error.message}`, { epairNum });
+  }
+}
+
+/**
+ * Release a jail's assigned epair and destroy it.
+ * @param {string} groupId - The group identifier
+ */
+async function releaseEpair(groupId) {
+  const epairNum = assignedEpairs.get(groupId);
+  if (epairNum !== undefined) {
+    await destroyEpair(epairNum);
+    assignedEpairs.delete(groupId);
+  }
+}
+
+/**
+ * Setup resolv.conf in the jail for DNS resolution.
+ * Copies the host's /etc/resolv.conf so the jail uses the same DNS servers.
+ * @param {string} jailPath - Path to the jail root
+ */
+async function setupJailResolv(jailPath) {
+  const resolvPath = path.join(jailPath, 'etc', 'resolv.conf');
+
+  try {
+    const hostResolv = fs.readFileSync('/etc/resolv.conf', 'utf-8');
+    await sudoExec(['sh', '-c', `cat > ${resolvPath} << 'RESOLV'\n${hostResolv}\nRESOLV`]);
+    log(`Copied host resolv.conf to jail`);
+  } catch (error) {
+    log(`Warning: could not create jail resolv.conf: ${error.message}`);
   }
 }
 
@@ -350,6 +449,17 @@ export async function createJail(groupId, mounts = []) {
     // Ensure /tmp is writable by node user (entrypoint compiles TypeScript to /tmp/dist)
     await sudoExec(['chmod', '1777', `${jailPath}/tmp`]);
 
+    // Network setup for restricted mode (vnet with epair)
+    let epairInfo = null;
+    if (JAIL_CONFIG.networkMode === 'restricted') {
+      // Create epair interface pair
+      epairInfo = await createEpair(groupId);
+      log(`Created epair for jail`, { groupId, ...epairInfo });
+
+      // Setup resolv.conf for DNS
+      await setupJailResolv(jailPath);
+    }
+
     // Create the jail
     const jailParams = [
       'jail', '-c',
@@ -362,11 +472,15 @@ export async function createJail(groupId, mounts = []) {
     // Network configuration
     if (JAIL_CONFIG.networkMode === 'inherit') {
       jailParams.push('ip4=inherit', 'ip6=inherit');
+    } else if (JAIL_CONFIG.networkMode === 'restricted') {
+      // Use vnet with epair interface
+      jailParams.push('vnet');
+      jailParams.push(`vnet.interface=${epairInfo.jailIface}`);
     }
 
     // Allow certain sysctls for compatibility
     jailParams.push(
-      'allow.raw_sockets',
+      'allow.raw_sockets', // Needed for DNS resolution
       'allow.sysvipc',
       'enforce_statfs=1',
       'mount.devfs',
@@ -374,6 +488,11 @@ export async function createJail(groupId, mounts = []) {
 
     log(`Starting jail`, { jailName, params: jailParams.slice(2) });
     await sudoExec(jailParams);
+
+    // Configure networking inside the vnet jail
+    if (JAIL_CONFIG.networkMode === 'restricted' && epairInfo) {
+      await configureJailNetwork(jailName, epairInfo.jailIface);
+    }
 
     log(`Jail created successfully`, { jailName });
     return jailName;
@@ -604,7 +723,7 @@ export async function stopJail(groupId) {
 }
 
 /**
- * Clean up jail resources (unmount, destroy dataset, remove fstab).
+ * Clean up jail resources (unmount, destroy dataset, remove fstab, remove IP alias).
  * @param {string} groupId - The group identifier
  * @param {Array<{hostPath: string, jailPath: string, readonly: boolean}>} mounts - Mount specifications (for unmounting)
  */
@@ -623,6 +742,11 @@ export async function cleanupJail(groupId, mounts = []) {
     } catch (error) {
       log(`Warning: could not stop jail during cleanup: ${error.message}`);
     }
+  }
+
+  // Destroy epair if in restricted network mode
+  if (JAIL_CONFIG.networkMode === 'restricted' && assignedEpairs.has(groupId)) {
+    await releaseEpair(groupId);
   }
 
   // Unmount devfs first (required before nullfs unmounts and zfs destroy)
@@ -778,6 +902,41 @@ export function cleanupOrphans() {
       }
     }
 
+    // Clean up orphan epair interfaces (for restricted network mode)
+    if (JAIL_CONFIG.networkMode === 'restricted') {
+      try {
+        // Find all epair interfaces
+        const ifconfigOutput = execFileSync('ifconfig', ['-l'], {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        const interfaces = ifconfigOutput.trim().split(/\s+/);
+        const epairRegex = /^epair(\d+)a$/;
+
+        for (const iface of interfaces) {
+          const match = iface.match(epairRegex);
+          if (match) {
+            const epairNum = parseInt(match[1], 10);
+            // Check if this epair is tracked (if not, it's orphaned)
+            const isTracked = Array.from(assignedEpairs.values()).includes(epairNum);
+            if (!isTracked) {
+              try {
+                execFileSync('sudo', ['ifconfig', iface, 'destroy'], {
+                  stdio: 'pipe',
+                  timeout: 5000,
+                });
+                log(`Destroyed orphan epair`, { epairNum });
+              } catch {
+                log(`Could not destroy orphan epair`, { epairNum });
+              }
+            }
+          }
+        }
+      } catch {
+        // No epairs or error checking - that's fine
+      }
+    }
+
     if (orphans.length > 0) {
       log(`Cleaned up orphaned jails`, { count: orphans.length, names: orphans });
     }
@@ -884,6 +1043,36 @@ export async function cleanupAllJails() {
     }
 
     log(`Completed cleanup for jail`, { jailName });
+  }
+
+  // Step 6: Destroy all epair interfaces (for restricted network mode)
+  if (JAIL_CONFIG.networkMode === 'restricted') {
+    try {
+      // Find all epair interfaces
+      const ifconfigOutput = execFileSync('ifconfig', ['-l'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      const interfaces = ifconfigOutput.trim().split(/\s+/);
+      const epairRegex = /^epair(\d+)a$/;
+
+      for (const iface of interfaces) {
+        const match = iface.match(epairRegex);
+        if (match) {
+          try {
+            await sudoExec(['ifconfig', iface, 'destroy']);
+            log(`Destroyed epair`, { iface });
+          } catch (err) {
+            log(`Failed to destroy epair`, { iface, error: err.message });
+          }
+        }
+      }
+    } catch (err) {
+      log(`Failed to clean up epair interfaces`, { error: err.message });
+    }
+
+    // Clear the in-memory epair assignments
+    assignedEpairs.clear();
   }
 
   log(`Finished cleaning up all NanoClaw jails`);
