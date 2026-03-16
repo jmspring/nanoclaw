@@ -21,6 +21,7 @@ import { logger } from './logger.js';
 import {
   CONTAINER_HOST_GATEWAY,
   CONTAINER_RUNTIME_BIN,
+  getRuntime,
   hostGatewayArgs,
   readonlyMountArgs,
   stopContainer,
@@ -264,6 +265,409 @@ function buildContainerArgs(
   return args;
 }
 
+/**
+ * Run agent in a FreeBSD jail (used when runtime is 'jail').
+ * Mirrors the Docker path but uses jail-runtime.js for isolation.
+ */
+async function runJailAgent(
+  group: RegisteredGroup,
+  input: ContainerInput,
+  mounts: VolumeMount[],
+  jailName: string,
+  logsDir: string,
+  onProcess: (proc: ChildProcess, containerName: string) => void,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+): Promise<ContainerOutput> {
+  const startTime = Date.now();
+
+  // @ts-expect-error jail-runtime.js is untyped
+  const jailRuntime = await import('../jail-runtime.js');
+
+  // Convert VolumeMount[] to jail mount specs (jailPath instead of containerPath)
+  const jailMounts = mounts.map((m) => ({
+    hostPath: m.hostPath,
+    jailPath: m.containerPath,
+    readonly: m.readonly,
+  }));
+
+  // Build environment variables (mirrors buildContainerArgs logic)
+  const env: Record<string, string> = {
+    TZ: TIMEZONE,
+    ANTHROPIC_BASE_URL: `http://${jailRuntime.JAIL_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
+    HOME: '/home/node',
+  };
+
+  const authMode = detectAuthMode();
+  if (authMode === 'api-key') {
+    env.ANTHROPIC_API_KEY = 'placeholder';
+  } else {
+    env.CLAUDE_CODE_OAUTH_TOKEN = 'placeholder';
+  }
+
+  logger.info(
+    { group: group.name, jailName, mountCount: jailMounts.length },
+    'Creating jail for agent',
+  );
+
+  try {
+    await jailRuntime.createJail(group.folder, jailMounts);
+  } catch (err) {
+    logger.error({ group: group.name, err }, 'Failed to create jail');
+    return {
+      status: 'error',
+      result: null,
+      error: `Failed to create jail: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  return new Promise((resolve) => {
+    // Spawn the agent inside the jail
+    // Mirrors the Docker entrypoint: compile TypeScript, then run node
+    // If /app/entrypoint.sh exists (jail template set up like Docker), use it.
+    // Otherwise, run the compile+execute steps inline.
+    const entrypointScript = `
+      set -e
+      if [ -f /app/entrypoint.sh ]; then
+        exec /app/entrypoint.sh
+      else
+        cd /app
+        npx tsc --outDir /tmp/dist 2>&1 >&2
+        ln -sf /app/node_modules /tmp/dist/node_modules
+        cat > /tmp/input.json
+        exec node /tmp/dist/index.js < /tmp/input.json
+      fi
+    `;
+    const proc = jailRuntime.spawnInJail(
+      group.folder,
+      ['sh', '-c', entrypointScript],
+      { env },
+    );
+
+    onProcess(proc, jailName);
+
+    let stdout = '';
+    let stderr = '';
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+
+    proc.stdin.write(JSON.stringify(input));
+    proc.stdin.end();
+
+    // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
+    let parseBuffer = '';
+    let newSessionId: string | undefined;
+    let outputChain = Promise.resolve();
+    let hadStreamingOutput = false;
+
+    const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
+    const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
+    let timedOut = false;
+
+    const killJail = async () => {
+      timedOut = true;
+      logger.error(
+        { group: group.name, jailName },
+        'Jail timeout, stopping',
+      );
+      try {
+        await jailRuntime.stopJail(group.folder);
+      } catch (err) {
+        logger.warn({ group: group.name, err }, 'Failed to stop jail');
+        proc.kill('SIGKILL');
+      }
+    };
+
+    let timeout = setTimeout(killJail, timeoutMs);
+
+    const resetTimeout = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(killJail, timeoutMs);
+    };
+
+    proc.stdout.on('data', (data: Buffer) => {
+      const chunk = data.toString();
+
+      if (!stdoutTruncated) {
+        const remaining = CONTAINER_MAX_OUTPUT_SIZE - stdout.length;
+        if (chunk.length > remaining) {
+          stdout += chunk.slice(0, remaining);
+          stdoutTruncated = true;
+          logger.warn(
+            { group: group.name, size: stdout.length },
+            'Jail stdout truncated due to size limit',
+          );
+        } else {
+          stdout += chunk;
+        }
+      }
+
+      if (onOutput) {
+        parseBuffer += chunk;
+        let startIdx: number;
+        while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
+          const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
+          if (endIdx === -1) break;
+
+          const jsonStr = parseBuffer
+            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
+            .trim();
+          parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
+
+          try {
+            const parsed: ContainerOutput = JSON.parse(jsonStr);
+            if (parsed.newSessionId) {
+              newSessionId = parsed.newSessionId;
+            }
+            hadStreamingOutput = true;
+            resetTimeout();
+            outputChain = outputChain.then(() => onOutput(parsed));
+          } catch (err) {
+            logger.warn(
+              { group: group.name, error: err },
+              'Failed to parse streamed output chunk',
+            );
+          }
+        }
+      }
+    });
+
+    proc.stderr.on('data', (data: Buffer) => {
+      const chunk = data.toString();
+      const lines = chunk.trim().split('\n');
+      for (const line of lines) {
+        if (line) logger.debug({ jail: group.folder }, line);
+      }
+      if (stderrTruncated) return;
+      const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
+      if (chunk.length > remaining) {
+        stderr += chunk.slice(0, remaining);
+        stderrTruncated = true;
+        logger.warn(
+          { group: group.name, size: stderr.length },
+          'Jail stderr truncated due to size limit',
+        );
+      } else {
+        stderr += chunk;
+      }
+    });
+
+    proc.on('close', async (code: number | null) => {
+      clearTimeout(timeout);
+      const duration = Date.now() - startTime;
+
+      // Cleanup jail
+      try {
+        await jailRuntime.destroyJail(group.folder, jailMounts);
+      } catch (err) {
+        logger.warn({ group: group.name, err }, 'Failed to destroy jail');
+      }
+
+      if (timedOut) {
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const timeoutLog = path.join(logsDir, `jail-${ts}.log`);
+        fs.writeFileSync(
+          timeoutLog,
+          [
+            `=== Jail Run Log (TIMEOUT) ===`,
+            `Timestamp: ${new Date().toISOString()}`,
+            `Group: ${group.name}`,
+            `Jail: ${jailName}`,
+            `Duration: ${duration}ms`,
+            `Exit Code: ${code}`,
+            `Had Streaming Output: ${hadStreamingOutput}`,
+          ].join('\n'),
+        );
+
+        if (hadStreamingOutput) {
+          logger.info(
+            { group: group.name, jailName, duration, code },
+            'Jail timed out after output (idle cleanup)',
+          );
+          outputChain.then(() => {
+            resolve({
+              status: 'success',
+              result: null,
+              newSessionId,
+            });
+          });
+          return;
+        }
+
+        logger.error(
+          { group: group.name, jailName, duration, code },
+          'Jail timed out with no output',
+        );
+
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Jail timed out after ${configTimeout}ms`,
+        });
+        return;
+      }
+
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const logFile = path.join(logsDir, `jail-${timestamp}.log`);
+      const isVerbose =
+        process.env.LOG_LEVEL === 'debug' || process.env.LOG_LEVEL === 'trace';
+
+      const logLines = [
+        `=== Jail Run Log ===`,
+        `Timestamp: ${new Date().toISOString()}`,
+        `Group: ${group.name}`,
+        `IsMain: ${input.isMain}`,
+        `Duration: ${duration}ms`,
+        `Exit Code: ${code}`,
+        `Stdout Truncated: ${stdoutTruncated}`,
+        `Stderr Truncated: ${stderrTruncated}`,
+        ``,
+      ];
+
+      const isError = code !== 0;
+
+      if (isVerbose || isError) {
+        logLines.push(
+          `=== Input ===`,
+          JSON.stringify(input, null, 2),
+          ``,
+          `=== Mounts ===`,
+          jailMounts
+            .map(
+              (m) =>
+                `${m.hostPath} -> ${m.jailPath}${m.readonly ? ' (ro)' : ''}`,
+            )
+            .join('\n'),
+          ``,
+          `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
+          stderr,
+          ``,
+          `=== Stdout${stdoutTruncated ? ' (TRUNCATED)' : ''} ===`,
+          stdout,
+        );
+      } else {
+        logLines.push(
+          `=== Input Summary ===`,
+          `Prompt length: ${input.prompt.length} chars`,
+          `Session ID: ${input.sessionId || 'new'}`,
+          ``,
+          `=== Mounts ===`,
+          jailMounts
+            .map((m) => `${m.jailPath}${m.readonly ? ' (ro)' : ''}`)
+            .join('\n'),
+          ``,
+        );
+      }
+
+      fs.writeFileSync(logFile, logLines.join('\n'));
+      logger.debug({ logFile, verbose: isVerbose }, 'Jail log written');
+
+      if (code !== 0) {
+        logger.error(
+          {
+            group: group.name,
+            code,
+            duration,
+            stderr,
+            stdout,
+            logFile,
+          },
+          'Jail exited with error',
+        );
+
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Jail exited with code ${code}: ${stderr.slice(-200)}`,
+        });
+        return;
+      }
+
+      // Streaming mode: wait for output chain to settle
+      if (onOutput) {
+        outputChain.then(() => {
+          logger.info(
+            { group: group.name, duration, newSessionId },
+            'Jail completed (streaming mode)',
+          );
+          resolve({
+            status: 'success',
+            result: null,
+            newSessionId,
+          });
+        });
+        return;
+      }
+
+      // Legacy mode: parse the last output marker pair
+      try {
+        const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
+        const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
+
+        let jsonLine: string;
+        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+          jsonLine = stdout
+            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
+            .trim();
+        } else {
+          const lines = stdout.trim().split('\n');
+          jsonLine = lines[lines.length - 1];
+        }
+
+        const output: ContainerOutput = JSON.parse(jsonLine);
+
+        logger.info(
+          {
+            group: group.name,
+            duration,
+            status: output.status,
+            hasResult: !!output.result,
+          },
+          'Jail completed',
+        );
+
+        resolve(output);
+      } catch (err) {
+        logger.error(
+          {
+            group: group.name,
+            stdout,
+            stderr,
+            error: err,
+          },
+          'Failed to parse jail output',
+        );
+
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Failed to parse jail output: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    });
+
+    proc.on('error', async (err: Error) => {
+      clearTimeout(timeout);
+      logger.error(
+        { group: group.name, jailName, error: err },
+        'Jail spawn error',
+      );
+
+      // Cleanup jail on error
+      try {
+        await jailRuntime.destroyJail(group.folder, jailMounts);
+      } catch (cleanupErr) {
+        logger.warn({ group: group.name, cleanupErr }, 'Failed to destroy jail after error');
+      }
+
+      resolve({
+        status: 'error',
+        result: null,
+        error: `Jail spawn error: ${err.message}`,
+      });
+    });
+  });
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -305,6 +709,20 @@ export async function runContainerAgent(
 
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
+
+  // Check runtime and dispatch accordingly
+  const runtime = getRuntime();
+  if (runtime === 'jail') {
+    return runJailAgent(
+      group,
+      input,
+      mounts,
+      containerName,
+      logsDir,
+      onProcess,
+      onOutput,
+    );
+  }
 
   return new Promise((resolve) => {
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
