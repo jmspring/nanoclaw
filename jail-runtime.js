@@ -121,6 +121,104 @@ export function writableMountSpec(hostPath, jailPath) {
   return { hostPath, jailPath, readonly: false };
 }
 
+/**
+ * Jail-native mount layout.
+ * These are the 5 semantic mounts a jail needs - no Docker translation.
+ */
+export const JAIL_MOUNT_LAYOUT = {
+  project: '/workspace/project',      // NanoClaw source (ro)
+  group: '/workspace/group',          // Group's folder (rw)
+  ipc: '/workspace/ipc',              // Group's IPC directory (rw)
+  claudeSession: '/home/node/.claude', // Claude session data (rw)
+  agentRunner: '/app/src',            // Agent runner source (ro)
+};
+
+/**
+ * Build mount specs from semantic paths.
+ * @param {Object} paths - Semantic mount paths
+ * @param {string} paths.projectPath - Path to NanoClaw source (read-only)
+ * @param {string} paths.groupPath - Path to this group's folder (read-write)
+ * @param {string} paths.ipcPath - Path to this group's IPC directory (read-write)
+ * @param {string} paths.claudeSessionPath - Path to Claude session data (read-write)
+ * @param {string} paths.agentRunnerPath - Path to agent runner source (read-only)
+ * @returns {Array<{hostPath: string, jailPath: string, readonly: boolean}>}
+ */
+export function buildJailMounts(paths) {
+  const mounts = [];
+
+  if (paths.projectPath) {
+    mounts.push({
+      hostPath: paths.projectPath,
+      jailPath: JAIL_MOUNT_LAYOUT.project,
+      readonly: true,
+    });
+  }
+
+  if (paths.groupPath) {
+    mounts.push({
+      hostPath: paths.groupPath,
+      jailPath: JAIL_MOUNT_LAYOUT.group,
+      readonly: false,
+    });
+  }
+
+  if (paths.ipcPath) {
+    mounts.push({
+      hostPath: paths.ipcPath,
+      jailPath: JAIL_MOUNT_LAYOUT.ipc,
+      readonly: false,
+    });
+  }
+
+  if (paths.claudeSessionPath) {
+    mounts.push({
+      hostPath: paths.claudeSessionPath,
+      jailPath: JAIL_MOUNT_LAYOUT.claudeSession,
+      readonly: false,
+    });
+  }
+
+  if (paths.agentRunnerPath) {
+    mounts.push({
+      hostPath: paths.agentRunnerPath,
+      jailPath: JAIL_MOUNT_LAYOUT.agentRunner,
+      readonly: true,
+    });
+  }
+
+  return mounts;
+}
+
+/**
+ * Ensure host-side directories exist for writable mounts.
+ * Creates groupPath, ipcPath, claudeSessionPath if they don't exist.
+ * @param {Object} paths - Semantic mount paths
+ */
+export function ensureHostDirectories(paths) {
+  const dirsToCreate = [
+    paths.groupPath,
+    paths.ipcPath,
+    paths.claudeSessionPath,
+  ].filter(Boolean);
+
+  for (const dir of dirsToCreate) {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+      log(`Created host directory`, { dir });
+    }
+  }
+
+  // Also create IPC subdirectories
+  if (paths.ipcPath) {
+    for (const subdir of ['messages', 'tasks', 'input']) {
+      const subdirPath = path.join(paths.ipcPath, subdir);
+      if (!fs.existsSync(subdirPath)) {
+        fs.mkdirSync(subdirPath, { recursive: true });
+      }
+    }
+  }
+}
+
 /** Build fstab content for jail mounts */
 function buildFstab(mounts, jailPath) {
   const lines = [];
@@ -178,6 +276,31 @@ async function unmountAll(mounts, jailPath) {
   if (errors.length > 0) {
     log(`Unmount errors: ${errors.join(', ')}`);
   }
+}
+
+/**
+ * Create a new jail from template snapshot using semantic paths.
+ * This is the preferred entry point for jail creation - no Docker translation needed.
+ * @param {string} groupId - The group identifier
+ * @param {Object} paths - Semantic mount paths
+ * @param {string} paths.projectPath - Path to NanoClaw source (read-only)
+ * @param {string} paths.groupPath - Path to this group's folder (read-write)
+ * @param {string} paths.ipcPath - Path to this group's IPC directory (read-write)
+ * @param {string} paths.claudeSessionPath - Path to Claude session data (read-write)
+ * @param {string} paths.agentRunnerPath - Path to agent runner source (read-only)
+ * @returns {Promise<{jailName: string, mounts: Array}>} - The jail name and mount specs for cleanup
+ */
+export async function createJailWithPaths(groupId, paths) {
+  // Ensure host directories exist
+  ensureHostDirectories(paths);
+
+  // Build mount specs from semantic paths
+  const mounts = buildJailMounts(paths);
+
+  // Create the jail
+  const jailName = await createJail(groupId, mounts);
+
+  return { jailName, mounts };
 }
 
 /**
@@ -708,12 +831,16 @@ export default {
   JAIL_RUNTIME_BIN,
   JAIL_HOST_GATEWAY,
   PROXY_BIND_HOST,
+  JAIL_MOUNT_LAYOUT,
   sanitizeJailName,
   getJailName,
   isJailRunning,
   hostGatewayArgs,
   readonlyMountSpec,
   writableMountSpec,
+  buildJailMounts,
+  ensureHostDirectories,
+  createJailWithPaths,
   createJail,
   execInJail,
   spawnInJail,

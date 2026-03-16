@@ -57,6 +57,84 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+/**
+ * Semantic mount paths for FreeBSD jails.
+ * No Docker translation - jail-runtime.js defines the internal layout.
+ */
+interface JailMountPaths {
+  projectPath: string | null; // NanoClaw source (main only)
+  groupPath: string; // Group's folder
+  ipcPath: string; // Group's IPC directory
+  claudeSessionPath: string; // Claude session data
+  agentRunnerPath: string; // Agent runner source
+}
+
+/**
+ * Build semantic mount paths for FreeBSD jails.
+ * Unlike Docker mounts, this doesn't include /dev/null tricks or file masking.
+ * The jail-runtime.js defines where these paths are mounted inside the jail.
+ */
+function buildJailMountPaths(
+  group: RegisteredGroup,
+  isMain: boolean,
+): JailMountPaths {
+  const projectRoot = process.cwd();
+  const groupDir = resolveGroupFolderPath(group.folder);
+  const groupIpcDir = resolveGroupIpcPath(group.folder);
+
+  // Per-group Claude sessions directory
+  const groupSessionsDir = path.join(
+    DATA_DIR,
+    'sessions',
+    group.folder,
+    '.claude',
+  );
+
+  // Ensure settings.json exists (same as Docker path)
+  fs.mkdirSync(groupSessionsDir, { recursive: true });
+  const settingsFile = path.join(groupSessionsDir, 'settings.json');
+  if (!fs.existsSync(settingsFile)) {
+    fs.writeFileSync(
+      settingsFile,
+      JSON.stringify(
+        {
+          env: {
+            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+          },
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+  }
+
+  // Sync skills (same as Docker path)
+  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
+  const skillsDst = path.join(groupSessionsDir, 'skills');
+  if (fs.existsSync(skillsSrc)) {
+    for (const skillDir of fs.readdirSync(skillsSrc)) {
+      const srcDir = path.join(skillsSrc, skillDir);
+      if (!fs.statSync(srcDir).isDirectory()) continue;
+      const dstDir = path.join(skillsDst, skillDir);
+      fs.cpSync(srcDir, dstDir, { recursive: true });
+    }
+  }
+
+  // Agent runner source - read-only, no per-group copy for jails
+  // Jails get the original source directly (simpler than Docker's writable copy)
+  const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');
+
+  return {
+    projectPath: isMain ? projectRoot : null, // Only main gets project access
+    groupPath: groupDir,
+    ipcPath: groupIpcDir,
+    claudeSessionPath: groupSessionsDir,
+    agentRunnerPath: agentRunnerSrc,
+  };
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
@@ -267,13 +345,11 @@ function buildContainerArgs(
 
 /**
  * Run agent in a FreeBSD jail (used when runtime is 'jail').
- * Mirrors the Docker path but uses jail-runtime.js for isolation.
+ * Uses semantic mount paths - no Docker volume translation.
  */
 async function runJailAgent(
   group: RegisteredGroup,
   input: ContainerInput,
-  mounts: VolumeMount[],
-  jailName: string,
   logsDir: string,
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
@@ -283,14 +359,10 @@ async function runJailAgent(
   // @ts-expect-error jail-runtime.js is untyped
   const jailRuntime = await import('../jail-runtime.js');
 
-  // Convert VolumeMount[] to jail mount specs (jailPath instead of containerPath)
-  const jailMounts = mounts.map((m) => ({
-    hostPath: m.hostPath,
-    jailPath: m.containerPath,
-    readonly: m.readonly,
-  }));
+  // Build semantic mount paths (not Docker VolumeMount[])
+  const mountPaths = buildJailMountPaths(group, input.isMain);
 
-  // Build environment variables (mirrors buildContainerArgs logic)
+  // Build environment variables
   const env: Record<string, string> = {
     TZ: TIMEZONE,
     ANTHROPIC_BASE_URL: `http://${jailRuntime.JAIL_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
@@ -305,12 +377,17 @@ async function runJailAgent(
   }
 
   logger.info(
-    { group: group.name, jailName, mountCount: jailMounts.length },
-    'Creating jail for agent',
+    { group: group.name, mountPaths },
+    'Creating jail with semantic paths',
   );
 
+  // Create jail with semantic paths - jail-runtime handles the layout
+  let jailName: string;
+  let jailMounts: Array<{ hostPath: string; jailPath: string; readonly: boolean }>;
   try {
-    await jailRuntime.createJail(group.folder, jailMounts);
+    const result = await jailRuntime.createJailWithPaths(group.folder, mountPaths);
+    jailName = result.jailName;
+    jailMounts = result.mounts;
   } catch (err) {
     logger.error({ group: group.name, err }, 'Failed to create jail');
     return {
@@ -365,10 +442,7 @@ async function runJailAgent(
 
     const killJail = async () => {
       timedOut = true;
-      logger.error(
-        { group: group.name, jailName },
-        'Jail timeout, stopping',
-      );
+      logger.error({ group: group.name, jailName }, 'Jail timeout, stopping');
       try {
         await jailRuntime.stopJail(group.folder);
       } catch (err) {
@@ -656,7 +730,10 @@ async function runJailAgent(
       try {
         await jailRuntime.destroyJail(group.folder, jailMounts);
       } catch (cleanupErr) {
-        logger.warn({ group: group.name, cleanupErr }, 'Failed to destroy jail after error');
+        logger.warn(
+          { group: group.name, cleanupErr },
+          'Failed to destroy jail after error',
+        );
       }
 
       resolve({
@@ -713,15 +790,8 @@ export async function runContainerAgent(
   // Check runtime and dispatch accordingly
   const runtime = getRuntime();
   if (runtime === 'jail') {
-    return runJailAgent(
-      group,
-      input,
-      mounts,
-      containerName,
-      logsDir,
-      onProcess,
-      onOutput,
-    );
+    // Jail path uses semantic mount paths, not Docker VolumeMount[]
+    return runJailAgent(group, input, logsDir, onProcess, onOutput);
   }
 
   return new Promise((resolve) => {
