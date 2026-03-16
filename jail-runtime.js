@@ -85,33 +85,76 @@ function sudoExecSync(args, options = {}) {
 }
 
 /**
+ * Acquire an exclusive lock for epair creation.
+ * Uses directory creation as an atomic lock mechanism (POSIX mkdir is atomic).
+ * @returns {Promise<Function>} - Unlock function to release the lock
+ */
+async function acquireEpairLock() {
+  const lockDir = '/tmp/nanoclaw-epair.lock';
+  const maxRetries = 100;
+  const retryDelay = 50; // milliseconds
+
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      // Atomic operation: mkdir fails if directory exists
+      fs.mkdirSync(lockDir, { mode: 0o755 });
+
+      // Lock acquired - return unlock function
+      return () => {
+        try {
+          fs.rmdirSync(lockDir);
+        } catch (err) {
+          log(`Warning: failed to release epair lock: ${err.message}`);
+        }
+      };
+    } catch (err) {
+      if (err.code !== 'EEXIST') {
+        throw err;
+      }
+      // Lock is held by another process - wait and retry
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
+    }
+  }
+
+  throw new Error('Failed to acquire epair lock after maximum retries');
+}
+
+/**
  * Create an epair interface pair for a vnet jail.
  * @param {string} groupId - The group identifier (for tracking)
  * @returns {Promise<{epairNum: number, hostIface: string, jailIface: string}>}
  */
 async function createEpair(groupId) {
-  // Create epair - FreeBSD returns the name (e.g., "epair0")
-  const result = await sudoExec(['ifconfig', 'epair', 'create']);
-  const epairName = result.stdout.trim(); // e.g., "epair0a"
+  // Acquire exclusive lock to prevent concurrent epair creation
+  const unlock = await acquireEpairLock();
 
-  // Extract the number from epair0a -> 0
-  const match = epairName.match(/epair(\d+)a/);
-  if (!match) {
-    throw new Error(`Unexpected epair name format: ${epairName}`);
+  try {
+    // Create epair - FreeBSD returns the name (e.g., "epair0")
+    const result = await sudoExec(['ifconfig', 'epair', 'create']);
+    const epairName = result.stdout.trim(); // e.g., "epair0a"
+
+    // Extract the number from epair0a -> 0
+    const match = epairName.match(/epair(\d+)a/);
+    if (!match) {
+      throw new Error(`Unexpected epair name format: ${epairName}`);
+    }
+    const epairNum = parseInt(match[1], 10);
+
+    const hostIface = `epair${epairNum}a`;
+    const jailIface = `epair${epairNum}b`;
+
+    // Configure host side with gateway IP
+    await sudoExec(['ifconfig', hostIface, `${JAIL_CONFIG.jailHostIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
+
+    // Track epair for cleanup
+    assignedEpairs.set(groupId, epairNum);
+
+    log(`Created epair`, { groupId, epairNum, hostIface, jailIface });
+    return { epairNum, hostIface, jailIface };
+  } finally {
+    // Always release lock, even on error
+    unlock();
   }
-  const epairNum = parseInt(match[1], 10);
-
-  const hostIface = `epair${epairNum}a`;
-  const jailIface = `epair${epairNum}b`;
-
-  // Configure host side with gateway IP
-  await sudoExec(['ifconfig', hostIface, `${JAIL_CONFIG.jailHostIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
-
-  // Track epair for cleanup
-  assignedEpairs.set(groupId, epairNum);
-
-  log(`Created epair`, { groupId, epairNum, hostIface, jailIface });
-  return { epairNum, hostIface, jailIface };
 }
 
 /**
