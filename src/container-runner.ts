@@ -758,10 +758,23 @@ export async function runContainerAgent(
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<ContainerOutput> {
-  const startTime = Date.now();
-
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
+
+  const logsDir = path.join(groupDir, 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+
+  // CRITICAL: Check runtime FIRST before any Docker-specific setup.
+  // Jail path must be completely independent from Docker.
+  const runtime = getRuntime();
+  if (runtime === 'jail') {
+    // Jail path uses semantic mount paths, not Docker VolumeMount[]
+    // Does NOT call buildVolumeMounts, buildContainerArgs, or any Docker code
+    return runJailAgent(group, input, logsDir, onProcess, onOutput);
+  }
+
+  // Docker path only below this point
+  const startTime = Date.now();
 
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
@@ -790,16 +803,6 @@ export async function runContainerAgent(
     },
     'Spawning container agent',
   );
-
-  const logsDir = path.join(groupDir, 'logs');
-  fs.mkdirSync(logsDir, { recursive: true });
-
-  // Check runtime and dispatch accordingly
-  const runtime = getRuntime();
-  if (runtime === 'jail') {
-    // Jail path uses semantic mount paths, not Docker VolumeMount[]
-    return runJailAgent(group, input, logsDir, onProcess, onOutput);
-  }
 
   return new Promise((resolve) => {
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
