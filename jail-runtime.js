@@ -735,49 +735,75 @@ export async function cleanupJail(groupId, mounts = []) {
 
   log(`Cleaning up jail`, { jailName });
 
-  // Stop jail if running
-  if (isJailRunning(jailName)) {
+  const errors = [];
+
+  try {
+    // Stop jail if running
+    if (isJailRunning(jailName)) {
+      try {
+        await stopJail(groupId);
+      } catch (error) {
+        log(`Warning: could not stop jail during cleanup: ${error.message}`);
+        errors.push(new Error(`Failed to stop jail: ${error.message}`));
+      }
+    }
+
+    // Destroy epair if in restricted network mode
+    if (JAIL_CONFIG.networkMode === 'restricted' && assignedEpairs.has(groupId)) {
+      try {
+        await releaseEpair(groupId);
+      } catch (error) {
+        log(`Warning: could not release epair: ${error.message}`);
+        errors.push(new Error(`Failed to release epair: ${error.message}`));
+      }
+    }
+
+    // Unmount devfs first (required before nullfs unmounts and zfs destroy)
     try {
-      await stopJail(groupId);
+      await sudoExec(['umount', '-f', path.join(jailPath, 'dev')]);
     } catch (error) {
-      log(`Warning: could not stop jail during cleanup: ${error.message}`);
+      // Expected to fail if devfs not mounted, don't add to errors
+    }
+
+    // Unmount nullfs mounts
+    if (mounts.length > 0) {
+      try {
+        await unmountAll(mounts, jailPath);
+      } catch (error) {
+        log(`Warning: could not unmount all filesystems: ${error.message}`);
+        errors.push(new Error(`Failed to unmount filesystems: ${error.message}`));
+      }
+    }
+
+    // Destroy ZFS dataset
+    if (datasetExists(dataset)) {
+      try {
+        await sudoExec(['zfs', 'destroy', '-r', dataset]);
+        log(`Destroyed dataset`, { dataset });
+      } catch (error) {
+        log(`Warning: could not destroy dataset: ${error.message}`);
+        errors.push(new Error(`Failed to destroy dataset: ${error.message}`));
+      }
+    }
+
+    // Remove fstab file
+    if (fs.existsSync(fstabPath)) {
+      try {
+        fs.unlinkSync(fstabPath);
+        log(`Removed fstab`, { fstabPath });
+      } catch (error) {
+        log(`Warning: could not remove fstab: ${error.message}`);
+        errors.push(new Error(`Failed to remove fstab: ${error.message}`));
+      }
+    }
+  } finally {
+    log(`Jail cleanup completed`, { jailName, errorCount: errors.length });
+
+    // Throw AggregateError if any errors occurred during cleanup
+    if (errors.length > 0) {
+      throw new AggregateError(errors, `Jail cleanup completed with ${errors.length} error(s)`);
     }
   }
-
-  // Destroy epair if in restricted network mode
-  if (JAIL_CONFIG.networkMode === 'restricted' && assignedEpairs.has(groupId)) {
-    await releaseEpair(groupId);
-  }
-
-  // Unmount devfs first (required before nullfs unmounts and zfs destroy)
-  await sudoExec(['umount', '-f', path.join(jailPath, 'dev')]).catch(() => {});
-
-  // Unmount nullfs mounts
-  if (mounts.length > 0) {
-    await unmountAll(mounts, jailPath);
-  }
-
-  // Destroy ZFS dataset
-  if (datasetExists(dataset)) {
-    try {
-      await sudoExec(['zfs', 'destroy', '-r', dataset]);
-      log(`Destroyed dataset`, { dataset });
-    } catch (error) {
-      log(`Warning: could not destroy dataset: ${error.message}`);
-    }
-  }
-
-  // Remove fstab file
-  if (fs.existsSync(fstabPath)) {
-    try {
-      fs.unlinkSync(fstabPath);
-      log(`Removed fstab`, { fstabPath });
-    } catch (error) {
-      log(`Warning: could not remove fstab: ${error.message}`);
-    }
-  }
-
-  log(`Jail cleanup completed`, { jailName });
 }
 
 /**
