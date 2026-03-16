@@ -124,7 +124,12 @@ function buildJailMountPaths(
 
   // Agent runner source - read-only, no per-group copy for jails
   // Jails get the original source directly (simpler than Docker's writable copy)
-  const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');
+  const agentRunnerSrc = path.join(
+    projectRoot,
+    'container',
+    'agent-runner',
+    'src',
+  );
 
   return {
     projectPath: isMain ? projectRoot : null, // Only main gets project access
@@ -367,6 +372,7 @@ async function runJailAgent(
     TZ: TIMEZONE,
     ANTHROPIC_BASE_URL: `http://${jailRuntime.JAIL_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
     HOME: '/home/node',
+    PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
   };
 
   const authMode = detectAuthMode();
@@ -383,9 +389,16 @@ async function runJailAgent(
 
   // Create jail with semantic paths - jail-runtime handles the layout
   let jailName: string;
-  let jailMounts: Array<{ hostPath: string; jailPath: string; readonly: boolean }>;
+  let jailMounts: Array<{
+    hostPath: string;
+    jailPath: string;
+    readonly: boolean;
+  }>;
   try {
-    const result = await jailRuntime.createJailWithPaths(group.folder, mountPaths);
+    const result = await jailRuntime.createJailWithPaths(
+      group.folder,
+      mountPaths,
+    );
     jailName = result.jailName;
     jailMounts = result.mounts;
   } catch (err) {
