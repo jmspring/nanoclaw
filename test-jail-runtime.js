@@ -11,8 +11,6 @@ import {
   isJailRunning,
   getJailName,
   sanitizeJailName,
-  readonlyMountSpec,
-  writableMountSpec,
   JAIL_CONFIG,
 } from './jail-runtime.js';
 import { execFileSync, execFile } from 'child_process';
@@ -114,7 +112,7 @@ test('create() — jail ZFS dataset exists, jail running, nullfs mounts active',
   fs.mkdirSync(workspaceDir, { recursive: true });
 
   const mounts = [
-    writableMountSpec(workspaceDir, '/workspace'),
+    { hostPath: workspaceDir, jailPath: '/workspace', readonly: false },
   ];
 
   try {
@@ -325,7 +323,7 @@ test('stop() + destroy() — jail removed, dataset destroyed, mounts cleaned', a
   fs.mkdirSync(workspaceDir, { recursive: true });
 
   const mounts = [
-    writableMountSpec(workspaceDir, '/workspace'),
+    { hostPath: workspaceDir, jailPath: '/workspace', readonly: false },
   ];
 
   try {
@@ -410,7 +408,7 @@ test('create() — workspace writable from inside jail', async () => {
   fs.mkdirSync(workspaceDir, { recursive: true });
 
   const mounts = [
-    writableMountSpec(workspaceDir, '/workspace'),
+    { hostPath: workspaceDir, jailPath: '/workspace', readonly: false },
   ];
 
   try {
@@ -456,7 +454,7 @@ test('create() — host paths outside mounts NOT accessible from jail', async ()
   fs.mkdirSync(workspaceDir, { recursive: true });
 
   const mounts = [
-    writableMountSpec(workspaceDir, '/workspace'),
+    { hostPath: workspaceDir, jailPath: '/workspace', readonly: false },
   ];
 
   try {
@@ -515,7 +513,7 @@ test('IPC round-trip — host writes input.json, jail reads, jail writes output.
   fs.mkdirSync(ipcDir, { recursive: true });
 
   const mounts = [
-    writableMountSpec(ipcDir, '/ipc'),
+    { hostPath: ipcDir, jailPath: '/ipc', readonly: false },
   ];
 
   try {
