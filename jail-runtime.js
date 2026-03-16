@@ -217,6 +217,11 @@ export async function createJail(groupId, mounts = []) {
     log(`Cloning template`, { snapshot, dataset });
     await sudoExec(['zfs', 'clone', snapshot, dataset]);
 
+    // Make cloned filesystem writable by current user (zfs clone creates root-owned dirs)
+    const userInfo = os.userInfo();
+    log(`Chowning jail root to ${userInfo.username}`, { jailPath });
+    await sudoExec(['chown', '-R', `${userInfo.username}:wheel`, jailPath]);
+
     // Create mount points inside jail
     await createMountPoints(mounts, jailPath);
 
@@ -616,6 +621,31 @@ export function cleanupOrphans() {
       } catch {
         // Already stopped or failed - try cleanup anyway
         log(`Could not stop orphaned jail, attempting cleanup`, { jailName });
+      }
+
+      // Unmount any nullfs mounts for this jail before destroying dataset
+      const orphanJailPath = getJailPath(jailName);
+      try {
+        const mountOutput = execFileSync('mount', ['-t', 'nullfs'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        const jailMounts = mountOutput.split('\n')
+          .filter(line => line.includes(orphanJailPath))
+          .map(line => {
+            const match = line.match(/on (.+?) \(/);
+            return match ? match[1] : null;
+          })
+          .filter(Boolean)
+          .reverse();
+
+        for (const mountPoint of jailMounts) {
+          try {
+            execFileSync('sudo', ['umount', '-f', mountPoint], { stdio: 'pipe', timeout: 5000 });
+            log(`Unmounted orphan mount`, { mountPoint });
+          } catch {
+            log(`Could not unmount orphan mount`, { mountPoint });
+          }
+        }
+      } catch {
+        // No mounts or error checking - continue anyway
       }
 
       // Also clean up any leftover datasets
