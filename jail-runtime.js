@@ -165,6 +165,7 @@ export function buildJailMounts(paths) {
 /**
  * Ensure host-side directories exist for writable mounts.
  * Creates groupPath, ipcPath, claudeSessionPath if they don't exist.
+ * Sets mode 2775 (setgid) and group wheel (gid 0) for shared host/jail access.
  * @param {Object} paths - Semantic mount paths
  */
 export function ensureHostDirectories(paths) {
@@ -174,19 +175,37 @@ export function ensureHostDirectories(paths) {
     paths.claudeSessionPath,
   ].filter(Boolean);
 
+  // Get current uid for chown (keep ownership, change group to wheel)
+  const uid = process.getuid?.() ?? 0;
+  const wheelGid = 0;
+
   for (const dir of dirsToCreate) {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
       log(`Created host directory`, { dir });
     }
+    // Set mode 2775 (rwxrwsr-x) - setgid ensures new files inherit wheel group
+    // Set group to wheel (gid 0) so jail's node user (supplementary group wheel) can write
+    try {
+      fs.chmodSync(dir, 0o2775);
+      fs.chownSync(dir, uid, wheelGid);
+    } catch (err) {
+      log(`Warning: could not set permissions on ${dir}: ${err.message}`);
+    }
   }
 
-  // Also create IPC subdirectories
+  // Also create IPC subdirectories with same permissions
   if (paths.ipcPath) {
     for (const subdir of ['messages', 'tasks', 'input']) {
       const subdirPath = path.join(paths.ipcPath, subdir);
       if (!fs.existsSync(subdirPath)) {
         fs.mkdirSync(subdirPath, { recursive: true });
+      }
+      try {
+        fs.chmodSync(subdirPath, 0o2775);
+        fs.chownSync(subdirPath, uid, wheelGid);
+      } catch (err) {
+        log(`Warning: could not set permissions on ${subdirPath}: ${err.message}`);
       }
     }
   }
@@ -397,6 +416,11 @@ export async function execInJail(groupId, command, options = {}) {
 
     args.push(jailName);
 
+    // Wrap command in shell to set umask 002 for group-writable files.
+    // This ensures files created by node inside the jail are writable by
+    // the host user (jims) via the shared wheel group.
+    args.push('sh', '-c', 'umask 002; exec "$@"', '--');
+
     // Environment variables must be passed via env command inside the jail
     // FreeBSD jexec does not support -e flags
     const envEntries = Object.entries(env);
@@ -525,15 +549,21 @@ export function spawnInJail(groupId, command, options = {}) {
 
   // Environment variables must be passed via env command inside the jail
   // FreeBSD jexec does not support -e flags
-  const envEntries = Object.entries(env);
-  if (envEntries.length > 0) {
-    args.push('env');
-    for (const [key, value] of envEntries) {
-      args.push(`${key}=${value}`);
-    }
+  args.push('env');
+  for (const [key, value] of Object.entries(env)) {
+    args.push(`${key}=${value}`);
   }
 
-  args.push(...command);
+  // Set umask 002 for group-writable files. This ensures files created by
+  // node inside the jail are writable by the host user (jims) via the
+  // shared wheel group. Prepend umask to shell scripts.
+  if (command[0] === 'sh' && command[1] === '-c' && command.length >= 3) {
+    args.push('sh', '-c', `umask 002; ${command[2]}`);
+    args.push(...command.slice(3));
+  } else {
+    // For non-shell commands, wrap in sh -c to set umask
+    args.push('sh', '-c', `umask 002; exec "$@"`, '--', ...command);
+  }
 
   log(`Spawning in jail`, { jailName, command: command.join(' '), cwd });
 
