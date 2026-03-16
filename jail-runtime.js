@@ -415,7 +415,7 @@ export async function execInJail(groupId, command, options = {}) {
   }
 
   return new Promise((resolve, reject) => {
-    const args = ['jexec', '-u', 'node'];
+    const args = ['jexec', '-U', 'node'];
 
     // FreeBSD jexec supports -d for working directory
     if (cwd) {
@@ -541,7 +541,7 @@ export function spawnInJail(groupId, command, options = {}) {
   const jailName = getJailName(groupId);
   const { env = {}, cwd } = options;
 
-  const args = ['jexec', '-u', 'node'];
+  const args = ['jexec', '-U', 'node'];
 
   // FreeBSD jexec supports -d for working directory
   if (cwd) {
