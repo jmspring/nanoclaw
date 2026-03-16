@@ -15,7 +15,7 @@
 # - Template must already have node24 and npm-node24 installed via pkg
 #
 
-set -e
+set -eu
 
 # Configuration
 TEMPLATE_PATH="/home/jims/code/nanoclaw/jails/template"
@@ -50,6 +50,11 @@ cleanup() {
         log "Stopping temporary jail..."
         sudo jail -r "$TEMP_JAIL_NAME" 2>/dev/null || true
     fi
+    # Unmount devfs if still mounted
+    if mount | grep -q "${TEMPLATE_PATH}/dev"; then
+        log "Unmounting devfs..."
+        sudo umount "${TEMPLATE_PATH}/dev" 2>/dev/null || true
+    fi
 }
 
 trap cleanup EXIT
@@ -61,7 +66,7 @@ if [ ! -d "$TEMPLATE_PATH" ]; then
     error "Template path does not exist: $TEMPLATE_PATH"
 fi
 
-if ! zfs list "$TEMPLATE_DATASET" >/dev/null 2>&1; then
+if ! sudo zfs list "$TEMPLATE_DATASET" >/dev/null 2>&1; then
     error "Template dataset does not exist: $TEMPLATE_DATASET"
 fi
 
@@ -76,17 +81,13 @@ fi
 # Check for dependent clones of the base snapshot
 log "Checking for dependent clones..."
 FULL_SNAPSHOT="${TEMPLATE_DATASET}@${SNAPSHOT_NAME}"
-if zfs list -t snapshot "$FULL_SNAPSHOT" >/dev/null 2>&1; then
-    # Check for clones (datasets with 'origin' property set to this snapshot)
-    CLONES=$(zfs list -H -o name,origin -t filesystem | grep "@${SNAPSHOT_NAME}$" | grep -v "^${TEMPLATE_DATASET}	" | cut -f1 || true)
+if sudo zfs list -t snapshot "$FULL_SNAPSHOT" >/dev/null 2>&1; then
+    CLONES=$(sudo zfs list -H -o clones "$FULL_SNAPSHOT" 2>/dev/null | grep -v '^-$' || true)
     if [ -n "$CLONES" ]; then
-        error "Cannot update template: the following datasets are cloned from ${FULL_SNAPSHOT}:
+        error "Cannot update template: snapshot has dependent clones:
 $CLONES
 
-Please destroy these clones first, or run:
-  sudo zfs destroy -r <clone_dataset>
-
-for each clone listed above."
+Please destroy these clones first, then re-run this script."
     fi
 fi
 
@@ -113,6 +114,7 @@ sudo jail -c \
     ip4=inherit \
     ip6=inherit \
     allow.raw_sockets \
+    mount.devfs \
     persist
 
 log "Jail started: $TEMP_JAIL_NAME"
@@ -152,7 +154,7 @@ jexec_cmd mkdir -p /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/i
 # Create home directory for node user
 log "Creating /home/node directory..."
 jexec_cmd mkdir -p /home/node/.claude
-jexec_cmd chmod 755 /home/node
+jexec_cmd chmod 777 /home/node
 
 # Create tmp directory if needed
 jexec_cmd mkdir -p /tmp
@@ -221,10 +223,16 @@ fi
 log "Stopping temporary jail..."
 sudo jail -r "$TEMP_JAIL_NAME"
 
+# Unmount devfs if still mounted
+if mount | grep -q "${TEMPLATE_PATH}/dev"; then
+    log "Unmounting devfs..."
+    sudo umount "${TEMPLATE_PATH}/dev"
+fi
+
 # Handle the snapshot
 log "Managing template snapshot..."
 
-if zfs list -t snapshot "$FULL_SNAPSHOT" >/dev/null 2>&1; then
+if sudo zfs list -t snapshot "$FULL_SNAPSHOT" >/dev/null 2>&1; then
     log "  Destroying existing snapshot: $FULL_SNAPSHOT"
     sudo zfs destroy "$FULL_SNAPSHOT"
 fi
@@ -233,7 +241,7 @@ log "  Creating new snapshot: $FULL_SNAPSHOT"
 sudo zfs snapshot "$FULL_SNAPSHOT"
 
 # Verify snapshot
-if zfs list -t snapshot "$FULL_SNAPSHOT" >/dev/null 2>&1; then
+if sudo zfs list -t snapshot "$FULL_SNAPSHOT" >/dev/null 2>&1; then
     log "  Snapshot created successfully"
 else
     error "  Failed to create snapshot"
