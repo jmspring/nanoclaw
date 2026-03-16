@@ -408,19 +408,24 @@ export async function execInJail(groupId, command, options = {}) {
   return new Promise((resolve, reject) => {
     const args = ['jexec'];
 
-    // Add environment variables
-    for (const [key, value] of Object.entries(env)) {
-      args.push('-e', `${key}=${value}`);
+    // FreeBSD jexec supports -d for working directory
+    if (cwd) {
+      args.push('-d', cwd);
     }
 
     args.push(jailName);
 
-    // If cwd specified, use sh -c to change directory first
-    if (cwd) {
-      args.push('sh', '-c', `cd ${cwd} && ${command.join(' ')}`);
-    } else {
-      args.push(...command);
+    // Environment variables must be passed via env command inside the jail
+    // FreeBSD jexec does not support -e flags
+    const envEntries = Object.entries(env);
+    if (envEntries.length > 0) {
+      args.push('env');
+      for (const [key, value] of envEntries) {
+        args.push(`${key}=${value}`);
+      }
     }
+
+    args.push(...command);
 
     log(`Executing in jail`, { jailName, command: command.join(' '), cwd });
 
@@ -529,19 +534,24 @@ export function spawnInJail(groupId, command, options = {}) {
 
   const args = ['jexec'];
 
-  // Add environment variables
-  for (const [key, value] of Object.entries(env)) {
-    args.push('-e', `${key}=${value}`);
+  // FreeBSD jexec supports -d for working directory
+  if (cwd) {
+    args.push('-d', cwd);
   }
 
   args.push(jailName);
 
-  // If cwd specified, use sh -c to change directory first
-  if (cwd) {
-    args.push('sh', '-c', `cd ${cwd} && exec ${command.join(' ')}`);
-  } else {
-    args.push(...command);
+  // Environment variables must be passed via env command inside the jail
+  // FreeBSD jexec does not support -e flags
+  const envEntries = Object.entries(env);
+  if (envEntries.length > 0) {
+    args.push('env');
+    for (const [key, value] of envEntries) {
+      args.push(`${key}=${value}`);
+    }
   }
+
+  args.push(...command);
 
   log(`Spawning in jail`, { jailName, command: command.join(' '), cwd });
 
