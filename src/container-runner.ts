@@ -92,6 +92,16 @@ function buildJailMountPaths(
 
   // Ensure settings.json exists (same as Docker path)
   fs.mkdirSync(groupSessionsDir, { recursive: true });
+
+  // Set permissions for shared host/jail access (mode 2775, group wheel)
+  // This allows both host (jims) and jail (node with wheel supplementary group) to write
+  try {
+    fs.chmodSync(groupSessionsDir, 0o2775);
+    const uid = process.getuid?.() ?? 0;
+    fs.chownSync(groupSessionsDir, uid, 0); // gid 0 = wheel
+  } catch {
+    // Non-fatal: permissions will be set by ensureHostDirectories in jail-runtime
+  }
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(
