@@ -829,13 +829,31 @@ export async function stopJail(groupId) {
 }
 
 /**
- * Clean up jail resources completely.
+ * Sleep for a specified duration (for retry backoff).
+ * @param {number} ms - Milliseconds to sleep
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Clean up jail resources completely with retry logic and error aggregation.
  * Removes rctl limits, stops the jail, destroys epair interfaces, unmounts filesystems
  * (devfs and nullfs), destroys the ZFS dataset, and removes the fstab file.
  * Safe to call even if jail is partially created or already destroyed.
+ *
+ * This function implements robust cleanup:
+ * - Each cleanup step is wrapped in try/catch
+ * - Cleanup continues even if individual steps fail
+ * - All errors are collected and aggregated
+ * - Failed steps are retried up to 3 times with exponential backoff
+ * - All aggregated errors are logged at the end
+ *
  * @param {string} groupId - The group identifier
  * @param {Array<{hostPath: string, jailPath: string, readonly: boolean}>} [mounts=[]] - Mount specifications (for unmounting)
  * @returns {Promise<void>}
+ * @throws {Error} If critical cleanup steps fail after all retries
  */
 export async function cleanupJail(groupId, mounts = []) {
   const jailName = getJailName(groupId);
@@ -845,52 +863,136 @@ export async function cleanupJail(groupId, mounts = []) {
 
   log(`Cleaning up jail`, { jailName });
 
-  // Remove rctl limits before stopping jail
-  await removeRctlLimits(jailName);
+  // Track errors and failed steps for retry
+  const errors = [];
+  const failedSteps = [];
 
-  // Stop jail if running
-  if (isJailRunning(jailName)) {
+  // Define cleanup steps as functions for easy retry
+  const cleanupSteps = [
+    {
+      name: 'remove_rctl_limits',
+      critical: false,
+      fn: async () => {
+        await removeRctlLimits(jailName);
+      },
+    },
+    {
+      name: 'stop_jail',
+      critical: false,
+      fn: async () => {
+        if (isJailRunning(jailName)) {
+          await stopJail(groupId);
+        }
+      },
+    },
+    {
+      name: 'destroy_epair',
+      critical: false,
+      fn: async () => {
+        if (JAIL_CONFIG.networkMode === 'restricted' && assignedEpairs.has(groupId)) {
+          await releaseEpair(groupId);
+        }
+      },
+    },
+    {
+      name: 'unmount_devfs',
+      critical: false,
+      fn: async () => {
+        await sudoExec(['umount', '-f', path.join(jailPath, 'dev')]);
+      },
+    },
+    {
+      name: 'unmount_nullfs',
+      critical: false,
+      fn: async () => {
+        if (mounts.length > 0) {
+          await unmountAll(mounts, jailPath);
+        }
+      },
+    },
+    {
+      name: 'destroy_dataset',
+      critical: true,
+      fn: async () => {
+        if (datasetExists(dataset)) {
+          await sudoExec(['zfs', 'destroy', '-r', dataset]);
+          log(`Destroyed dataset`, { dataset });
+        }
+      },
+    },
+    {
+      name: 'remove_fstab',
+      critical: false,
+      fn: async () => {
+        if (fs.existsSync(fstabPath)) {
+          fs.unlinkSync(fstabPath);
+          log(`Removed fstab`, { fstabPath });
+        }
+      },
+    },
+  ];
+
+  // Execute all cleanup steps, collecting errors but continuing
+  for (const step of cleanupSteps) {
     try {
-      await stopJail(groupId);
+      await step.fn();
     } catch (error) {
-      log(`Warning: could not stop jail during cleanup: ${error.message}`);
+      const errorMsg = `${step.name}: ${error.message}`;
+      errors.push(errorMsg);
+      failedSteps.push(step);
+      log(`Cleanup step failed: ${errorMsg}`, { jailName });
     }
   }
 
-  // Destroy epair if in restricted network mode
-  if (JAIL_CONFIG.networkMode === 'restricted' && assignedEpairs.has(groupId)) {
-    await releaseEpair(groupId);
-  }
+  // Retry failed steps up to 3 times with exponential backoff
+  if (failedSteps.length > 0) {
+    log(`Retrying ${failedSteps.length} failed cleanup steps`, { jailName });
 
-  // Unmount devfs first (required before nullfs unmounts and zfs destroy)
-  await sudoExec(['umount', '-f', path.join(jailPath, 'dev')]).catch(() => {});
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const backoffMs = Math.pow(2, attempt) * 100; // 200ms, 400ms, 800ms
+      await sleep(backoffMs);
 
-  // Unmount nullfs mounts
-  if (mounts.length > 0) {
-    await unmountAll(mounts, jailPath);
-  }
+      const stillFailing = [];
 
-  // Destroy ZFS dataset
-  if (datasetExists(dataset)) {
-    try {
-      await sudoExec(['zfs', 'destroy', '-r', dataset]);
-      log(`Destroyed dataset`, { dataset });
-    } catch (error) {
-      log(`Warning: could not destroy dataset: ${error.message}`);
+      for (const step of failedSteps) {
+        try {
+          await step.fn();
+          log(`Retry succeeded: ${step.name}`, { jailName, attempt });
+          // Remove from errors if retry succeeded
+          const errorIndex = errors.findIndex((e) => e.startsWith(step.name));
+          if (errorIndex !== -1) {
+            errors.splice(errorIndex, 1);
+          }
+        } catch (error) {
+          stillFailing.push(step);
+          log(`Retry failed: ${step.name}`, { jailName, attempt, error: error.message });
+        }
+      }
+
+      // Update failed steps list
+      failedSteps.length = 0;
+      failedSteps.push(...stillFailing);
+
+      if (failedSteps.length === 0) {
+        log(`All cleanup steps succeeded after retry`, { jailName, attempt });
+        break;
+      }
     }
   }
 
-  // Remove fstab file
-  if (fs.existsSync(fstabPath)) {
-    try {
-      fs.unlinkSync(fstabPath);
-      log(`Removed fstab`, { fstabPath });
-    } catch (error) {
-      log(`Warning: could not remove fstab: ${error.message}`);
-    }
-  }
+  // Log aggregated errors
+  if (errors.length > 0) {
+    log(`Cleanup completed with errors`, { jailName, errors });
 
-  log(`Jail cleanup completed`, { jailName });
+    // Check if any critical steps failed
+    const criticalFailures = failedSteps.filter((s) => s.critical);
+    if (criticalFailures.length > 0) {
+      const criticalErrors = criticalFailures.map((s) => s.name).join(', ');
+      throw new Error(`Critical cleanup steps failed: ${criticalErrors}. Errors: ${errors.join('; ')}`);
+    }
+  } else {
+    log(`Jail cleanup completed successfully`, { jailName });
+  }
 }
 
 /**
@@ -956,10 +1058,17 @@ export function ensureJailRuntimeRunning() {
 }
 
 /**
- * Clean up orphaned NanoClaw jails from previous runs.
+ * Clean up orphaned NanoClaw jails from previous runs with retry logic.
  * Finds all running jails with 'nanoclaw_' prefix and performs full cleanup: removes rctl
  * limits, stops jails, unmounts filesystems, destroys ZFS datasets, removes fstab files,
  * and destroys orphaned epair interfaces. Called at startup to ensure clean slate.
+ *
+ * Implements robust recovery:
+ * - Each cleanup step is wrapped in try/catch
+ * - Failed operations are retried up to 3 times with exponential backoff
+ * - All errors are collected and logged
+ * - Continues cleanup even if individual operations fail
+ *
  * @returns {void}
  */
 export function cleanupOrphans() {
@@ -973,68 +1082,94 @@ export function cleanupOrphans() {
     const orphans = output.trim().split('\n')
       .filter(line => line.startsWith('nanoclaw_'));
 
+    if (orphans.length === 0) {
+      return;
+    }
+
+    log(`Found ${orphans.length} orphaned jails, cleaning up...`, { names: orphans });
+
     for (const jailName of orphans) {
-      // Remove rctl limits for orphaned jail
-      try {
-        execFileSync('sudo', ['rctl', '-r', `jail:${jailName}`], { stdio: 'pipe', timeout: 5000 });
-        log(`Removed rctl limits for orphaned jail`, { jailName });
-      } catch {
-        // May not have rctl rules - ignore
-      }
+      const errors = [];
 
-      try {
-        log(`Stopping orphaned jail`, { jailName });
-        execFileSync('sudo', ['jail', '-r', jailName], { stdio: 'pipe', timeout: 15000 });
-        log(`Stopped orphaned jail`, { jailName });
-      } catch {
-        // Already stopped or failed - try cleanup anyway
-        log(`Could not stop orphaned jail, attempting cleanup`, { jailName });
-      }
+      // Define cleanup steps for this jail
+      const cleanupSteps = [
+        {
+          name: 'remove_rctl_limits',
+          fn: () => execFileSync('sudo', ['rctl', '-r', `jail:${jailName}`], { stdio: 'pipe', timeout: 5000 }),
+        },
+        {
+          name: 'stop_jail',
+          fn: () => execFileSync('sudo', ['jail', '-r', jailName], { stdio: 'pipe', timeout: 15000 }),
+        },
+        {
+          name: 'unmount_filesystems',
+          fn: () => {
+            const orphanJailPath = getJailPath(jailName);
+            const mountOutput = execFileSync('mount', ['-t', 'nullfs'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+            const jailMounts = mountOutput.split('\n')
+              .filter(line => line.includes(orphanJailPath))
+              .map(line => {
+                const match = line.match(/on (.+?) \(/);
+                return match ? match[1] : null;
+              })
+              .filter(Boolean)
+              .reverse();
 
-      // Unmount any nullfs mounts for this jail before destroying dataset
-      const orphanJailPath = getJailPath(jailName);
-      try {
-        const mountOutput = execFileSync('mount', ['-t', 'nullfs'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
-        const jailMounts = mountOutput.split('\n')
-          .filter(line => line.includes(orphanJailPath))
-          .map(line => {
-            const match = line.match(/on (.+?) \(/);
-            return match ? match[1] : null;
-          })
-          .filter(Boolean)
-          .reverse();
+            for (const mountPoint of jailMounts) {
+              execFileSync('sudo', ['umount', '-f', mountPoint], { stdio: 'pipe', timeout: 5000 });
+            }
+          },
+        },
+        {
+          name: 'destroy_dataset',
+          fn: () => {
+            const dataset = `${JAIL_CONFIG.jailsDataset}/${jailName}`;
+            if (datasetExists(dataset)) {
+              execFileSync('sudo', ['zfs', 'destroy', '-r', dataset], { stdio: 'pipe', timeout: 15000 });
+            }
+          },
+        },
+        {
+          name: 'remove_fstab',
+          fn: () => {
+            const fstabPath = path.join(JAIL_CONFIG.jailsPath, `${jailName}.fstab`);
+            if (fs.existsSync(fstabPath)) {
+              fs.unlinkSync(fstabPath);
+            }
+          },
+        },
+      ];
 
-        for (const mountPoint of jailMounts) {
+      // Execute cleanup steps with retry
+      for (const step of cleanupSteps) {
+        let succeeded = false;
+        let lastError = null;
+
+        for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            execFileSync('sudo', ['umount', '-f', mountPoint], { stdio: 'pipe', timeout: 5000 });
-            log(`Unmounted orphan mount`, { mountPoint });
-          } catch {
-            log(`Could not unmount orphan mount`, { mountPoint });
+            step.fn();
+            succeeded = true;
+            break;
+          } catch (error) {
+            lastError = error;
+            if (attempt < 2) {
+              // Exponential backoff: 100ms, 200ms
+              const backoffMs = Math.pow(2, attempt) * 100;
+              execFileSync('sleep', [`${backoffMs / 1000}`], { timeout: 1000 }).catch(() => {});
+            }
           }
         }
-      } catch {
-        // No mounts or error checking - continue anyway
-      }
 
-      // Also clean up any leftover datasets
-      const dataset = `${JAIL_CONFIG.jailsDataset}/${jailName}`;
-      if (datasetExists(dataset)) {
-        try {
-          execFileSync('sudo', ['zfs', 'destroy', '-r', dataset], { stdio: 'pipe', timeout: 15000 });
-          log(`Destroyed orphan dataset`, { dataset });
-        } catch {
-          log(`Could not destroy orphan dataset`, { dataset });
+        if (!succeeded && lastError) {
+          errors.push(`${step.name}: ${lastError.message}`);
+          log(`Orphan cleanup step failed after retries`, { jailName, step: step.name });
         }
       }
 
-      // Clean up fstab
-      const fstabPath = path.join(JAIL_CONFIG.jailsPath, `${jailName}.fstab`);
-      if (fs.existsSync(fstabPath)) {
-        try {
-          fs.unlinkSync(fstabPath);
-        } catch {
-          // Ignore
-        }
+      if (errors.length > 0) {
+        log(`Orphan cleanup completed with errors`, { jailName, errors });
+      } else {
+        log(`Orphan cleanup completed successfully`, { jailName });
       }
     }
 
@@ -1049,6 +1184,7 @@ export function cleanupOrphans() {
         const interfaces = ifconfigOutput.trim().split(/\s+/);
         const epairRegex = /^epair(\d+)a$/;
 
+        const orphanEpairs = [];
         for (const iface of interfaces) {
           const match = iface.match(epairRegex);
           if (match) {
@@ -1056,26 +1192,39 @@ export function cleanupOrphans() {
             // Check if this epair is tracked (if not, it's orphaned)
             const isTracked = Array.from(assignedEpairs.values()).includes(epairNum);
             if (!isTracked) {
-              try {
-                execFileSync('sudo', ['ifconfig', iface, 'destroy'], {
-                  stdio: 'pipe',
-                  timeout: 5000,
-                });
-                log(`Destroyed orphan epair`, { epairNum });
-              } catch {
-                log(`Could not destroy orphan epair`, { epairNum });
+              orphanEpairs.push({ iface, epairNum });
+            }
+          }
+        }
+
+        // Clean up orphan epairs with retry
+        for (const { iface, epairNum } of orphanEpairs) {
+          let succeeded = false;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              execFileSync('sudo', ['ifconfig', iface, 'destroy'], {
+                stdio: 'pipe',
+                timeout: 5000,
+              });
+              log(`Destroyed orphan epair`, { epairNum });
+              succeeded = true;
+              break;
+            } catch (error) {
+              if (attempt === 2) {
+                log(`Could not destroy orphan epair after retries`, { epairNum, error: error.message });
+              } else {
+                const backoffMs = Math.pow(2, attempt) * 100;
+                execFileSync('sleep', [`${backoffMs / 1000}`], { timeout: 1000 }).catch(() => {});
               }
             }
           }
         }
-      } catch {
-        // No epairs or error checking - that's fine
+      } catch (error) {
+        log(`Failed to clean up orphan epairs`, { error: error.message });
       }
     }
 
-    if (orphans.length > 0) {
-      log(`Cleaned up orphaned jails`, { count: orphans.length, names: orphans });
-    }
+    log(`Orphan cleanup completed`, { count: orphans.length });
   } catch (err) {
     log(`Failed to clean up orphaned jails`, { error: err.message });
   }
