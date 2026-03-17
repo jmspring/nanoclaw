@@ -147,7 +147,19 @@ git clone https://github.com/yourorg/nanoclaw.git
 cd nanoclaw/src
 ```
 
-### Step 4: Create ZFS Datasets
+### Step 4: Install devfs Ruleset
+
+```sh
+# Install restrictive devfs ruleset for jail security
+sudo cp etc/devfs.rules /etc/devfs.rules
+
+# Or append to existing /etc/devfs.rules if you have other rulesets
+sudo cat etc/devfs.rules | sudo tee -a /etc/devfs.rules
+```
+
+This ruleset restricts device access inside jails to prevent potential jail escape via kernel bugs. It only exposes safe devices like `/dev/null`, `/dev/random`, `/dev/urandom`, and standard I/O, while blocking dangerous devices like `/dev/mem`, `/dev/kmem`, `/dev/bpf*`, etc.
+
+### Step 5: Create ZFS Datasets
 
 ```sh
 # Create the jail hierarchy
@@ -159,7 +171,7 @@ mkdir -p /home/youruser/code/nanoclaw/workspaces
 mkdir -p /home/youruser/code/nanoclaw/ipc
 ```
 
-### Step 5: Build the Jail Template
+### Step 6: Build the Jail Template
 
 ```sh
 # Fetch FreeBSD base system
@@ -184,7 +196,7 @@ sudo cp /etc/resolv.conf template/etc/resolv.conf
 ./scripts/setup-jail-template.sh
 ```
 
-### Step 6: Configure Environment
+### Step 7: Configure Environment
 
 ```sh
 # Create .env file
@@ -195,7 +207,7 @@ NANOCLAW_JAIL_NETWORK_MODE=inherit
 EOF
 ```
 
-### Step 7: Build and Run
+### Step 8: Build and Run
 
 ```sh
 npm ci
@@ -203,7 +215,7 @@ npm run build
 npm run dev
 ```
 
-### Step 8: Test
+### Step 9: Test
 
 Send a message to your configured Telegram bot mentioning the trigger word. The agent should respond.
 
@@ -642,6 +654,35 @@ sudo jexec nanoclaw_template npm list -g
 - **allow.* params**: Fine-grained capability control
 - **vnet**: True network stack isolation (not just filtering)
 - **ZFS properties**: Quota, reservation, compression per-jail
+- **devfs ruleset**: Restricts device access to prevent jail escape
+
+### devfs Ruleset Security
+
+NanoClaw uses a restrictive devfs ruleset (ruleset #10, defined in `etc/devfs.rules`) to limit device exposure inside jails. This prevents potential jail escape via kernel bugs that could exploit dangerous devices.
+
+**Allowed devices:**
+- `/dev/null`, `/dev/zero` - Null and zero devices
+- `/dev/random`, `/dev/urandom` - Random number generation
+- `/dev/stdin`, `/dev/stdout`, `/dev/stderr` - Standard I/O
+- `/dev/fd/*` - File descriptor access
+- `/dev/pts/*` - Pseudo-terminal devices
+
+**Blocked devices:**
+- `/dev/mem`, `/dev/kmem` - Direct memory access (kernel memory)
+- `/dev/io` - Raw I/O port access
+- `/dev/bpf*` - Berkeley Packet Filter (packet capture)
+- `/dev/mdN` - Memory disk devices
+- All other devices not explicitly allowed
+
+The ruleset is applied automatically during jail creation via the `devfs_ruleset=10` parameter. To verify it's working:
+
+```sh
+# Check devices visible inside a running jail
+sudo jexec nanoclaw_groupname ls -la /dev
+
+# You should only see: null, zero, random, urandom, stdin, stdout, stderr, fd, pts
+# You should NOT see: mem, kmem, bpf*, io, md*
+```
 
 ## 10. Configuration Reference
 
