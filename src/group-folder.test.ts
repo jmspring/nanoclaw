@@ -40,4 +40,44 @@ describe('group folder validation', () => {
     expect(() => resolveGroupFolderPath('../../etc')).toThrow();
     expect(() => resolveGroupIpcPath('/tmp')).toThrow();
   });
+
+  it('rejects path traversal vectors in resolveGroupIpcPath', () => {
+    // Test various path traversal attempts
+    expect(() => resolveGroupIpcPath('../../../etc/passwd')).toThrow(
+      'Invalid group folder',
+    );
+    expect(() => resolveGroupIpcPath('../../../../etc')).toThrow(
+      'Invalid group folder',
+    );
+    expect(() => resolveGroupIpcPath('../etc')).toThrow('Invalid group folder');
+    expect(() => resolveGroupIpcPath('/etc/passwd')).toThrow(
+      'Invalid group folder',
+    );
+    expect(() => resolveGroupIpcPath('/tmp')).toThrow('Invalid group folder');
+    expect(() => resolveGroupIpcPath('foo/../../../etc')).toThrow(
+      'Invalid group folder',
+    );
+  });
+
+  it('rejects path traversal vectors in resolveGroupFolderPath', () => {
+    // Test various path traversal attempts
+    expect(() => resolveGroupFolderPath('../../../etc/passwd')).toThrow(
+      'Invalid group folder',
+    );
+    expect(() => resolveGroupFolderPath('../../../../etc')).toThrow(
+      'Invalid group folder',
+    );
+    expect(() => resolveGroupFolderPath('../etc')).toThrow(
+      'Invalid group folder',
+    );
+    expect(() => resolveGroupFolderPath('/etc/passwd')).toThrow(
+      'Invalid group folder',
+    );
+    expect(() => resolveGroupFolderPath('/tmp')).toThrow(
+      'Invalid group folder',
+    );
+    expect(() => resolveGroupFolderPath('foo/../../../etc')).toThrow(
+      'Invalid group folder',
+    );
+  });
 });
