@@ -35,6 +35,9 @@ export const JAIL_CONFIG = {
 /** Track assigned epair numbers for cleanup */
 const assignedEpairs = new Map(); // groupId -> epair number (e.g., 0 for epair0a/epair0b)
 
+/** Path to persistent epair state file */
+const EPAIR_STATE_FILE = '/tmp/nanoclaw-epair-state.json';
+
 /** Logging helper with prefix */
 function log(message, data = {}) {
   const timestamp = new Date().toISOString();
@@ -131,33 +134,143 @@ function sudoExecSync(args, options = {}) {
 }
 
 /**
+ * Persist epair state to disk for crash recovery.
+ * Must be called while holding the epair lock.
+ */
+function persistEpairState() {
+  try {
+    const state = Object.fromEntries(assignedEpairs);
+    fs.writeFileSync(EPAIR_STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
+  } catch (error) {
+    log(`Warning: failed to persist epair state: ${error.message}`);
+  }
+}
+
+/**
+ * Restore epair state from disk and sync with actual system state.
+ * Call this on startup to recover from crashes.
+ */
+function restoreEpairState() {
+  // First, load persisted state if it exists
+  if (fs.existsSync(EPAIR_STATE_FILE)) {
+    try {
+      const data = fs.readFileSync(EPAIR_STATE_FILE, 'utf-8');
+      const state = JSON.parse(data);
+      for (const [groupId, epairNum] of Object.entries(state)) {
+        assignedEpairs.set(groupId, epairNum);
+      }
+      log(`Restored epair state from disk`, { count: assignedEpairs.size });
+    } catch (error) {
+      log(`Warning: failed to restore epair state: ${error.message}`);
+    }
+  }
+
+  // Now verify state against actual system interfaces
+  try {
+    const ifconfigOutput = execFileSync('ifconfig', ['-l'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const interfaces = ifconfigOutput.trim().split(/\s+/);
+    const existingEpairs = new Set();
+    const epairRegex = /^epair(\d+)a$/;
+
+    for (const iface of interfaces) {
+      const match = iface.match(epairRegex);
+      if (match) {
+        existingEpairs.add(parseInt(match[1], 10));
+      }
+    }
+
+    // Remove entries from Map if epair no longer exists in system
+    for (const [groupId, epairNum] of assignedEpairs.entries()) {
+      if (!existingEpairs.has(epairNum)) {
+        log(`Epair ${epairNum} for group ${groupId} no longer exists, removing from state`);
+        assignedEpairs.delete(groupId);
+      }
+    }
+
+    // Persist the cleaned-up state
+    persistEpairState();
+
+    log(`Synced epair state with system`, { tracked: assignedEpairs.size, existing: existingEpairs.size });
+  } catch (error) {
+    log(`Warning: failed to sync epair state with system: ${error.message}`);
+  }
+}
+
+/**
+ * Acquire an exclusive lock for epair creation.
+ * Uses directory creation as an atomic lock mechanism (POSIX mkdir is atomic).
+ * @returns {Promise<Function>} - Unlock function to release the lock
+ */
+async function acquireEpairLock() {
+  const lockDir = '/tmp/nanoclaw-epair.lock';
+  const maxRetries = 100;
+  const retryDelay = 50; // milliseconds
+
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      // Atomic operation: mkdir fails if directory exists
+      fs.mkdirSync(lockDir, { mode: 0o755 });
+
+      // Lock acquired - return unlock function
+      return () => {
+        try {
+          fs.rmdirSync(lockDir);
+        } catch (err) {
+          log(`Warning: failed to release epair lock: ${err.message}`);
+        }
+      };
+    } catch (err) {
+      if (err.code !== 'EEXIST') {
+        throw err;
+      }
+      // Lock is held by another process - wait and retry
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
+    }
+  }
+
+  throw new Error('Failed to acquire epair lock after maximum retries');
+}
+
+/**
  * Create an epair interface pair for a vnet jail.
  * @param {string} groupId - The group identifier (for tracking)
  * @returns {Promise<{epairNum: number, hostIface: string, jailIface: string}>}
  */
 async function createEpair(groupId) {
-  // Create epair - FreeBSD returns the name (e.g., "epair0")
-  const result = await sudoExec(['ifconfig', 'epair', 'create']);
-  const epairName = result.stdout.trim(); // e.g., "epair0a"
+  // Acquire exclusive lock to prevent concurrent epair creation
+  const unlock = await acquireEpairLock();
 
-  // Extract the number from epair0a -> 0
-  const match = epairName.match(/epair(\d+)a/);
-  if (!match) {
-    throw new Error(`Unexpected epair name format: ${epairName}`);
+  try {
+    // Create epair - FreeBSD returns the name (e.g., "epair0")
+    const result = await sudoExec(['ifconfig', 'epair', 'create']);
+    const epairName = result.stdout.trim(); // e.g., "epair0a"
+
+    // Extract the number from epair0a -> 0
+    const match = epairName.match(/epair(\d+)a/);
+    if (!match) {
+      throw new Error(`Unexpected epair name format: ${epairName}`);
+    }
+    const epairNum = parseInt(match[1], 10);
+
+    const hostIface = `epair${epairNum}a`;
+    const jailIface = `epair${epairNum}b`;
+
+    // Configure host side with gateway IP
+    await sudoExec(['ifconfig', hostIface, `${JAIL_CONFIG.jailHostIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
+
+    // Track epair for cleanup and persist state
+    assignedEpairs.set(groupId, epairNum);
+    persistEpairState();
+
+    log(`Created epair`, { groupId, epairNum, hostIface, jailIface });
+    return { epairNum, hostIface, jailIface };
+  } finally {
+    // Always release lock, even on error
+    unlock();
   }
-  const epairNum = parseInt(match[1], 10);
-
-  const hostIface = `epair${epairNum}a`;
-  const jailIface = `epair${epairNum}b`;
-
-  // Configure host side with gateway IP
-  await sudoExec(['ifconfig', hostIface, `${JAIL_CONFIG.jailHostIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
-
-  // Track epair for cleanup
-  assignedEpairs.set(groupId, epairNum);
-
-  log(`Created epair`, { groupId, epairNum, hostIface, jailIface });
-  return { epairNum, hostIface, jailIface };
 }
 
 /**
@@ -199,6 +312,7 @@ async function releaseEpair(groupId) {
   if (epairNum !== undefined) {
     await destroyEpair(epairNum);
     assignedEpairs.delete(groupId);
+    persistEpairState();
   }
 }
 
@@ -883,6 +997,11 @@ export function ensureJailRuntimeRunning() {
     // Check jail command is available
     execFileSync('which', ['jail'], { stdio: 'pipe', timeout: 5000 });
 
+    // Restore epair state from disk for crash recovery
+    if (JAIL_CONFIG.networkMode === 'restricted') {
+      restoreEpairState();
+    }
+
     log('Jail runtime verified');
   } catch (err) {
     console.error(
@@ -991,8 +1110,12 @@ export function cleanupOrphans() {
     }
 
     // Clean up orphan epair interfaces (for restricted network mode)
+    // An epair is orphaned if it exists in the system but isn't tracked in our state
     if (JAIL_CONFIG.networkMode === 'restricted') {
       try {
+        // Restore state from disk first to get accurate tracking info
+        restoreEpairState();
+
         // Find all epair interfaces
         const ifconfigOutput = execFileSync('ifconfig', ['-l'], {
           encoding: 'utf-8',
