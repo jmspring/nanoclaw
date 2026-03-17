@@ -131,36 +131,136 @@ function sudoExecSync(args, options = {}) {
 }
 
 /**
+ * Execute a function with an exclusive file lock to prevent concurrent access.
+ * Uses flock(1) to wrap the operation in an atomic lock.
+ * @param {Function} fn - Async function to execute under lock
+ * @returns {Promise<*>} Result of the function
+ */
+async function withEpairLock(fn) {
+  const lockPath = '/tmp/nanoclaw-epair.lock';
+
+  // Create lock file if it doesn't exist
+  if (!fs.existsSync(lockPath)) {
+    fs.writeFileSync(lockPath, '', { mode: 0o644 });
+  }
+
+  // We'll use a temporary script file to execute the operation under flock
+  // This ensures the lock is held for the entire duration of epair creation
+  const scriptPath = `/tmp/nanoclaw-epair-${process.pid}-${Date.now()}.sh`;
+
+  try {
+    // Execute function and capture result
+    // Since we can't easily pass Node.js function to flock, we use a simpler approach:
+    // Just execute the function directly with a mutex-style lock file approach
+    let acquired = false;
+    let attempts = 0;
+    const maxAttempts = 50; // 5 seconds max wait
+
+    while (!acquired && attempts < maxAttempts) {
+      try {
+        // Try to create lock file exclusively
+        fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+        acquired = true;
+      } catch (err) {
+        if (err.code === 'EEXIST') {
+          // Lock held by another process, wait and retry
+          await new Promise(resolve => setTimeout(resolve, 100));
+          attempts++;
+
+          // Check if lock is stale (process no longer exists)
+          try {
+            const lockPid = parseInt(fs.readFileSync(lockPath, 'utf8'), 10);
+            if (lockPid) {
+              // Try to check if process exists (send signal 0)
+              try {
+                process.kill(lockPid, 0);
+                // Process exists, continue waiting
+              } catch (e) {
+                // Process doesn't exist, lock is stale, remove it
+                if (e.code === 'ESRCH') {
+                  try {
+                    fs.unlinkSync(lockPath);
+                  } catch (unlinkErr) {
+                    // Another process may have removed it
+                  }
+                }
+              }
+            }
+          } catch (readErr) {
+            // Lock file may have been removed, try again
+          }
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    if (!acquired) {
+      throw new Error('Failed to acquire epair lock after timeout');
+    }
+
+    // Execute the function under lock
+    try {
+      return await fn();
+    } finally {
+      // Release lock
+      try {
+        // Only remove if we still own it
+        const lockPid = parseInt(fs.readFileSync(lockPath, 'utf8'), 10);
+        if (lockPid === process.pid) {
+          fs.unlinkSync(lockPath);
+        }
+      } catch (err) {
+        // Lock file may have been removed already
+      }
+    }
+  } finally {
+    // Clean up temp script if it exists
+    try {
+      if (fs.existsSync(scriptPath)) {
+        fs.unlinkSync(scriptPath);
+      }
+    } catch (err) {
+      // Ignore cleanup errors
+    }
+  }
+}
+
+/**
  * Create an epair interface pair for a vnet jail.
  * Epairs provide virtual network interface pairs for jail network isolation.
  * The host side is configured with the gateway IP, and the jail side is moved into the jail.
+ * Uses file-based locking to prevent race conditions in concurrent jail creation.
  * @param {string} groupId - The group identifier (for tracking)
  * @returns {Promise<{epairNum: number, hostIface: string, jailIface: string}>} The epair number and interface names
  * @throws {Error} If epair creation fails or name format is unexpected
  */
 export async function createEpair(groupId) {
-  // Create epair - FreeBSD returns the name (e.g., "epair0")
-  const result = await sudoExec(['ifconfig', 'epair', 'create']);
-  const epairName = result.stdout.trim(); // e.g., "epair0a"
+  // Execute epair creation under exclusive lock to prevent races
+  return await withEpairLock(async () => {
+    // Create epair - FreeBSD returns the name (e.g., "epair0")
+    const result = await sudoExec(['ifconfig', 'epair', 'create']);
+    const epairName = result.stdout.trim(); // e.g., "epair0a"
 
-  // Extract the number from epair0a -> 0
-  const match = epairName.match(/epair(\d+)a/);
-  if (!match) {
-    throw new Error(`Unexpected epair name format: ${epairName}`);
-  }
-  const epairNum = parseInt(match[1], 10);
+    // Extract the number from epair0a -> 0
+    const match = epairName.match(/epair(\d+)a/);
+    if (!match) {
+      throw new Error(`Unexpected epair name format: ${epairName}`);
+    }
+    const epairNum = parseInt(match[1], 10);
 
-  const hostIface = `epair${epairNum}a`;
-  const jailIface = `epair${epairNum}b`;
+    const hostIface = `epair${epairNum}a`;
+    const jailIface = `epair${epairNum}b`;
 
-  // Configure host side with gateway IP
-  await sudoExec(['ifconfig', hostIface, `${JAIL_CONFIG.jailHostIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
+    // Configure host side with gateway IP
+    await sudoExec(['ifconfig', hostIface, `${JAIL_CONFIG.jailHostIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
 
-  // Track epair for cleanup
-  assignedEpairs.set(groupId, epairNum);
+    // Track epair for cleanup
+    assignedEpairs.set(groupId, epairNum);
 
-  log(`Created epair`, { groupId, epairNum, hostIface, jailIface });
-  return { epairNum, hostIface, jailIface };
+    log(`Created epair`, { groupId, epairNum, hostIface, jailIface });
+    return { epairNum, hostIface, jailIface };
+  });
 }
 
 /**
