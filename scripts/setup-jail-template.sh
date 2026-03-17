@@ -55,6 +55,15 @@ cleanup() {
         log "Unmounting devfs..."
         sudo umount "${TEMPLATE_PATH}/dev" 2>/dev/null || true
     fi
+
+    # If backup snapshot exists and base snapshot doesn't, offer restoration
+    BACKUP_SNAPSHOT="${TEMPLATE_DATASET}@base-backup"
+    FULL_SNAPSHOT="${TEMPLATE_DATASET}@${SNAPSHOT_NAME}"
+    if sudo zfs list -t snapshot "$BACKUP_SNAPSHOT" >/dev/null 2>&1 && \
+       ! sudo zfs list -t snapshot "$FULL_SNAPSHOT" >/dev/null 2>&1; then
+        warn "Backup snapshot exists but base snapshot does not."
+        warn "To restore: sudo zfs rename $BACKUP_SNAPSHOT $FULL_SNAPSHOT"
+    fi
 }
 
 trap cleanup EXIT
@@ -233,19 +242,78 @@ fi
 # Handle the snapshot
 log "Managing template snapshot..."
 
+BACKUP_SNAPSHOT="${TEMPLATE_DATASET}@base-backup"
+
+# If an old snapshot exists, rename it to backup instead of destroying
 if sudo zfs list -t snapshot "$FULL_SNAPSHOT" >/dev/null 2>&1; then
-    log "  Destroying existing snapshot: $FULL_SNAPSHOT"
-    sudo zfs destroy "$FULL_SNAPSHOT"
+    log "  Backing up existing snapshot: $FULL_SNAPSHOT -> $BACKUP_SNAPSHOT"
+
+    # Destroy old backup if it exists
+    if sudo zfs list -t snapshot "$BACKUP_SNAPSHOT" >/dev/null 2>&1; then
+        log "    Removing old backup snapshot..."
+        sudo zfs destroy "$BACKUP_SNAPSHOT"
+    fi
+
+    # Rename current snapshot to backup
+    sudo zfs rename "$FULL_SNAPSHOT" "$BACKUP_SNAPSHOT"
 fi
 
 log "  Creating new snapshot: $FULL_SNAPSHOT"
 sudo zfs snapshot "$FULL_SNAPSHOT"
 
-# Verify snapshot
-if sudo zfs list -t snapshot "$FULL_SNAPSHOT" >/dev/null 2>&1; then
-    log "  Snapshot created successfully"
-else
+# Verify snapshot was created
+if ! sudo zfs list -t snapshot "$FULL_SNAPSHOT" >/dev/null 2>&1; then
     error "  Failed to create snapshot"
+fi
+
+log "  Snapshot created successfully"
+
+# Validate the new snapshot by testing a clone
+log "  Validating new snapshot..."
+VALIDATION_CLONE="${TEMPLATE_DATASET}_validate_$$"
+VALIDATION_PATH="${TEMPLATE_PATH}_validate_$$"
+
+validate_cleanup() {
+    if sudo zfs list "$VALIDATION_CLONE" >/dev/null 2>&1; then
+        sudo zfs destroy "$VALIDATION_CLONE"
+    fi
+}
+
+trap 'validate_cleanup; cleanup' EXIT
+
+if sudo zfs clone "$FULL_SNAPSHOT" "$VALIDATION_CLONE" 2>&1; then
+    log "    Clone test: SUCCESS"
+
+    # Verify the clone mountpoint exists and contains expected files
+    if [ -f "${VALIDATION_PATH}/app/entrypoint.sh" ] && \
+       [ -d "${VALIDATION_PATH}/app/node_modules" ]; then
+        log "    Contents verification: SUCCESS"
+        VALIDATION_OK=true
+    else
+        warn "    Contents verification: FAILED (missing expected files)"
+        VALIDATION_OK=false
+    fi
+
+    # Clean up validation clone
+    sudo zfs destroy "$VALIDATION_CLONE"
+else
+    warn "    Clone test: FAILED"
+    VALIDATION_OK=false
+fi
+
+# If validation failed, restore from backup
+if [ "$VALIDATION_OK" = "false" ]; then
+    error "Snapshot validation failed. Restoring from backup...
+
+To restore manually:
+  sudo zfs destroy $FULL_SNAPSHOT
+  sudo zfs rename $BACKUP_SNAPSHOT $FULL_SNAPSHOT"
+fi
+
+# Validation succeeded, destroy backup
+if sudo zfs list -t snapshot "$BACKUP_SNAPSHOT" >/dev/null 2>&1; then
+    log "  Removing backup snapshot (validation passed)..."
+    sudo zfs destroy "$BACKUP_SNAPSHOT"
 fi
 
 log ""
