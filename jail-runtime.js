@@ -29,6 +29,9 @@ export const JAIL_CONFIG = {
 /** Track assigned epair numbers for cleanup */
 const assignedEpairs = new Map(); // groupId -> epair number (e.g., 0 for epair0a/epair0b)
 
+/** Path to persistent epair state file */
+const EPAIR_STATE_FILE = '/tmp/nanoclaw-epair-state.json';
+
 /** Logging helper with prefix */
 function log(message, data = {}) {
   const timestamp = new Date().toISOString();
@@ -81,6 +84,72 @@ function sudoExecSync(args, options = {}) {
     return execFileSync('sudo', args, { encoding: 'utf-8', timeout: 30000, ...options });
   } catch (error) {
     throw new Error(`sudo ${args.join(' ')} failed: ${error.message}`);
+  }
+}
+
+/**
+ * Persist epair state to disk for crash recovery.
+ * Must be called while holding the epair lock.
+ */
+function persistEpairState() {
+  try {
+    const state = Object.fromEntries(assignedEpairs);
+    fs.writeFileSync(EPAIR_STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
+  } catch (error) {
+    log(`Warning: failed to persist epair state: ${error.message}`);
+  }
+}
+
+/**
+ * Restore epair state from disk and sync with actual system state.
+ * Call this on startup to recover from crashes.
+ */
+function restoreEpairState() {
+  // First, load persisted state if it exists
+  if (fs.existsSync(EPAIR_STATE_FILE)) {
+    try {
+      const data = fs.readFileSync(EPAIR_STATE_FILE, 'utf-8');
+      const state = JSON.parse(data);
+      for (const [groupId, epairNum] of Object.entries(state)) {
+        assignedEpairs.set(groupId, epairNum);
+      }
+      log(`Restored epair state from disk`, { count: assignedEpairs.size });
+    } catch (error) {
+      log(`Warning: failed to restore epair state: ${error.message}`);
+    }
+  }
+
+  // Now verify state against actual system interfaces
+  try {
+    const ifconfigOutput = execFileSync('ifconfig', ['-l'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const interfaces = ifconfigOutput.trim().split(/\s+/);
+    const existingEpairs = new Set();
+    const epairRegex = /^epair(\d+)a$/;
+
+    for (const iface of interfaces) {
+      const match = iface.match(epairRegex);
+      if (match) {
+        existingEpairs.add(parseInt(match[1], 10));
+      }
+    }
+
+    // Remove entries from Map if epair no longer exists in system
+    for (const [groupId, epairNum] of assignedEpairs.entries()) {
+      if (!existingEpairs.has(epairNum)) {
+        log(`Epair ${epairNum} for group ${groupId} no longer exists, removing from state`);
+        assignedEpairs.delete(groupId);
+      }
+    }
+
+    // Persist the cleaned-up state
+    persistEpairState();
+
+    log(`Synced epair state with system`, { tracked: assignedEpairs.size, existing: existingEpairs.size });
+  } catch (error) {
+    log(`Warning: failed to sync epair state with system: ${error.message}`);
   }
 }
 
@@ -146,8 +215,9 @@ async function createEpair(groupId) {
     // Configure host side with gateway IP
     await sudoExec(['ifconfig', hostIface, `${JAIL_CONFIG.jailHostIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
 
-    // Track epair for cleanup
+    // Track epair for cleanup and persist state
     assignedEpairs.set(groupId, epairNum);
+    persistEpairState();
 
     log(`Created epair`, { groupId, epairNum, hostIface, jailIface });
     return { epairNum, hostIface, jailIface };
@@ -196,6 +266,7 @@ async function releaseEpair(groupId) {
   if (epairNum !== undefined) {
     await destroyEpair(epairNum);
     assignedEpairs.delete(groupId);
+    persistEpairState();
   }
 }
 
@@ -846,6 +917,11 @@ export function ensureJailRuntimeRunning() {
     // Check jail command is available
     execFileSync('which', ['jail'], { stdio: 'pipe', timeout: 5000 });
 
+    // Restore epair state from disk for crash recovery
+    if (JAIL_CONFIG.networkMode === 'restricted') {
+      restoreEpairState();
+    }
+
     log('Jail runtime verified');
   } catch (err) {
     console.error(
@@ -946,8 +1022,12 @@ export function cleanupOrphans() {
     }
 
     // Clean up orphan epair interfaces (for restricted network mode)
+    // An epair is orphaned if it exists in the system but isn't tracked in our state
     if (JAIL_CONFIG.networkMode === 'restricted') {
       try {
+        // Restore state from disk first to get accurate tracking info
+        restoreEpairState();
+
         // Find all epair interfaces
         const ifconfigOutput = execFileSync('ifconfig', ['-l'], {
           encoding: 'utf-8',
