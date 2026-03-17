@@ -75,12 +75,12 @@ This document outlines the cleanup tasks for the FreeBSD jail support implementa
    - Document when to use `pf-nanoclaw.conf` vs `pf-nanoclaw-anchor.conf`
    - Or remove one if redundant
 
-5. **JAIL-CLEANUP-005**: Clean up Git branches
-   - Review and delete merged branches:
-     - `phase-2/jail-infrastructure`
-     - `phase-3/jail-runtime`
-     - `phase-3/jail-runtime-wiring-fix`
-     - `phase-4/jail-runtime-fixes`
+5. **JAIL-CLEANUP-005**: Clean up Git branches ✅ **COMPLETED** (ticket src-jc05)
+   - Deleted local and remote branches (all work integrated via PRs/tickets):
+     - `phase-2/jail-infrastructure` (was b06d15b)
+     - `phase-3/jail-runtime` (was f2ea502)
+     - `phase-3/jail-runtime-wiring-fix` (was 0e44dcd)
+     - `phase-4/jail-runtime-fixes` (was 51010c3)
 
 6. **JAIL-CLEANUP-006**: Verify FREEBSD_JAILS.md accuracy
    - Compare documentation against actual implementation
