@@ -323,16 +323,43 @@ function buildFstab(mounts, jailPath) {
 
 /** Create mount point directories inside the jail */
 async function createMountPoints(mounts, jailPath) {
+  const resolvedJailRoot = path.resolve(jailPath);
+
   for (const mount of mounts) {
-    const targetPath = path.join(jailPath, mount.jailPath);
+    const targetPath = path.resolve(jailPath, mount.jailPath);
+
+    // Paranoid check: target must be within jail root (defense in depth)
+    if (!targetPath.startsWith(resolvedJailRoot + path.sep) && targetPath !== resolvedJailRoot) {
+      throw new Error(`Mount target escapes jail root: ${mount.jailPath}`);
+    }
+
+    // Reject any path containing '..' after canonicalization
+    if (mount.jailPath.includes('..')) {
+      throw new Error(`Mount path contains path traversal: ${mount.jailPath}`);
+    }
+
     await sudoExec(['mkdir', '-p', targetPath]);
   }
 }
 
 /** Mount all nullfs mounts for a jail */
 async function mountNullfs(mounts, jailPath) {
+  const resolvedJailRoot = path.resolve(jailPath);
+
   for (const mount of mounts) {
-    const targetPath = path.join(jailPath, mount.jailPath);
+    // Canonicalize paths with realpath-style resolution
+    const targetPath = path.resolve(jailPath, mount.jailPath);
+
+    // Paranoid check: target must be within jail root (defense in depth)
+    if (!targetPath.startsWith(resolvedJailRoot + path.sep) && targetPath !== resolvedJailRoot) {
+      throw new Error(`Mount target escapes jail root: ${mount.jailPath}`);
+    }
+
+    // Reject any path containing '..' after canonicalization
+    if (mount.jailPath.includes('..')) {
+      throw new Error(`Mount path contains path traversal: ${mount.jailPath}`);
+    }
+
     const opts = mount.readonly ? 'ro' : 'rw';
     try {
       await sudoExec(['mount_nullfs', '-o', opts, mount.hostPath, targetPath]);
