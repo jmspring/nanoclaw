@@ -221,6 +221,125 @@ Send a message to your configured Telegram bot mentioning the trigger word. The 
 
 ## 4. Architecture
 
+### Runtime Architecture Diagram
+
+```mermaid
+flowchart TD
+    subgraph "Message Flow"
+        MSG[Message arrives from Telegram/Slack/etc] --> ORCH[Orchestrator<br/>src/index.ts]
+        ORCH --> RUNNER[container-runner.ts]
+        RUNNER --> RUNTIME[jail-runtime.js]
+    end
+
+    subgraph "ZFS Dataset Structure"
+        POOL[(zroot/nanoclaw/jails)]
+        TEMPLATE[(template dataset)]
+        SNAPSHOT[(@base snapshot)]
+        CLONE[(nanoclaw_groupname<br/>clone)]
+
+        POOL --> TEMPLATE
+        TEMPLATE --> SNAPSHOT
+        SNAPSHOT -.clone.-> CLONE
+    end
+
+    subgraph "Jail Creation Process"
+        RUNTIME --> ZFS_CLONE[1. ZFS clone from snapshot]
+        ZFS_CLONE --> MKDIR[2. Create mount points]
+        MKDIR --> NULLFS[3. nullfs mounts]
+        NULLFS --> EPAIR_CREATE[4a. Create epair<br/>restricted mode only]
+        NULLFS --> JAIL_CREATE[4b. jail -c]
+        EPAIR_CREATE --> JAIL_CREATE
+        JAIL_CREATE --> RCTL[5. Apply rctl limits]
+        RCTL --> NETWORK_CFG[6. Configure jail network<br/>restricted mode only]
+    end
+
+    subgraph "Mount Layout"
+        direction LR
+        HOST_PROJECT[Host: NanoClaw src] -->|ro| JAIL_PROJECT[/workspace/project]
+        HOST_GROUP[Host: groups/name] -->|rw| JAIL_GROUP[/workspace/group]
+        HOST_IPC[Host: ipc/name] -->|rw| JAIL_IPC[/workspace/ipc]
+        HOST_SESSION[Host: data/sessions/name] -->|rw| JAIL_SESSION[/home/node/.claude]
+        HOST_RUNNER[Host: container/agent-runner] -->|ro| JAIL_RUNNER[/app/src]
+    end
+
+    subgraph "Network Architecture - Restricted Mode"
+        direction TB
+        EPAIR_A[epair0a<br/>10.99.0.1/30<br/>Host side]
+        EPAIR_B[epair0b<br/>10.99.0.2/30<br/>Jail side]
+        PF[pf NAT]
+        EXT[re0 external interface]
+
+        EPAIR_A <--> EPAIR_B
+        EPAIR_A --> PF
+        PF --> EXT
+
+        subgraph "pf Firewall Rules"
+            ALLOW_DNS[✓ DNS port 53]
+            ALLOW_API[✓ api.anthropic.com:443]
+            BLOCK_ALL[✗ All other traffic]
+        end
+
+        PF --> ALLOW_DNS
+        PF --> ALLOW_API
+        PF --> BLOCK_ALL
+    end
+
+    subgraph "Jail Execution"
+        NETWORK_CFG --> JEXEC[jexec -U node -d /app]
+        JEXEC --> ENTRYPOINT[entrypoint.sh]
+        ENTRYPOINT --> COMPILE[Compile TypeScript]
+        COMPILE --> AGENT[Run Agent SDK]
+        AGENT --> CLAUDE_API[api.anthropic.com]
+        CLAUDE_API --> RESPONSE[Write response to IPC]
+    end
+
+    subgraph "Cleanup Process"
+        RESPONSE --> STOP[jail -r stop]
+        STOP --> REMOVE_RCTL[Remove rctl limits]
+        REMOVE_RCTL --> UMOUNT_DEV[Unmount devfs]
+        UMOUNT_DEV --> UMOUNT_NULLFS[Unmount nullfs mounts]
+        UMOUNT_NULLFS --> DESTROY_EPAIR[Destroy epair<br/>restricted mode]
+        DESTROY_EPAIR --> ZFS_DESTROY[zfs destroy clone]
+        ZFS_DESTROY --> CLEANUP_FSTAB[Remove fstab file]
+    end
+
+    subgraph "Resource Limits - rctl"
+        RCTL_MEM[memoryuse: 2G]
+        RCTL_PROC[maxproc: 100]
+        RCTL_CPU[pcpu: 80%]
+    end
+
+    subgraph "Security - devfs ruleset 10"
+        DEVFS_ALLOW[✓ null, zero, random<br/>✓ stdin, stdout, stderr<br/>✓ pts/*, fd/*]
+        DEVFS_BLOCK[✗ mem, kmem, io<br/>✗ bpf*, md*]
+    end
+
+    RUNTIME --> POOL
+    ZFS_CLONE --> CLONE
+    NULLFS --> HOST_PROJECT
+    NULLFS --> HOST_GROUP
+    NULLFS --> HOST_IPC
+    NULLFS --> HOST_SESSION
+    NULLFS --> HOST_RUNNER
+
+    JAIL_CREATE --> DEVFS_ALLOW
+    JAIL_CREATE --> DEVFS_BLOCK
+    RCTL --> RCTL_MEM
+    RCTL --> RCTL_PROC
+    RCTL --> RCTL_CPU
+
+    EPAIR_CREATE --> EPAIR_A
+
+    style MSG fill:#e1f5ff
+    style CLONE fill:#fff4e6
+    style AGENT fill:#e8f5e9
+    style BLOCK_ALL fill:#ffebee
+    style DEVFS_BLOCK fill:#ffebee
+    style ALLOW_DNS fill:#e8f5e9
+    style ALLOW_API fill:#e8f5e9
+    style DEVFS_ALLOW fill:#e8f5e9
+```
+
 ### Jail Lifecycle
 
 ```

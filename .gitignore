@@ -35,4 +35,8 @@ groups/global/*
 # Skills system (local per-installation state)
 .nanoclaw/
 
+# Jail runtime artifacts
+jails/
+groups/*/logs/jail-*.log
+
 agents-sdk-docs
