@@ -132,10 +132,12 @@ function sudoExecSync(args, options = {}) {
 
 /**
  * Create an epair interface pair for a vnet jail.
+ * Epairs provide virtual network interface pairs for jail network isolation.
  * @param {string} groupId - The group identifier (for tracking)
- * @returns {Promise<{epairNum: number, hostIface: string, jailIface: string}>}
+ * @returns {Promise<{epairNum: number, hostIface: string, jailIface: string}>} The epair number and interface names
+ * @throws {Error} If epair creation fails or name format is unexpected
  */
-async function createEpair(groupId) {
+export async function createEpair(groupId) {
   // Create epair - FreeBSD returns the name (e.g., "epair0")
   const result = await sudoExec(['ifconfig', 'epair', 'create']);
   const epairName = result.stdout.trim(); // e.g., "epair0a"
@@ -162,10 +164,13 @@ async function createEpair(groupId) {
 
 /**
  * Configure networking inside a vnet jail after it starts.
+ * Sets up the jail's network interface with IP and default route.
  * @param {string} jailName - The jail name
  * @param {string} jailIface - The jail-side interface name (e.g., "epair0b")
+ * @returns {Promise<void>}
+ * @throws {Error} If interface configuration or routing fails
  */
-async function configureJailNetwork(jailName, jailIface) {
+export async function configureJailNetwork(jailName, jailIface) {
   // Configure the jail's interface
   await sudoExec(['jexec', jailName, 'ifconfig', jailIface, `${JAIL_CONFIG.jailIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
 
@@ -177,9 +182,11 @@ async function configureJailNetwork(jailName, jailIface) {
 
 /**
  * Destroy an epair interface pair.
+ * Removes both sides of the epair by destroying the host-side interface.
  * @param {number} epairNum - The epair number
+ * @returns {Promise<void>}
  */
-async function destroyEpair(epairNum) {
+export async function destroyEpair(epairNum) {
   const hostIface = `epair${epairNum}a`;
   try {
     // Destroying the 'a' side destroys both sides
@@ -445,14 +452,16 @@ async function unmountAll(mounts, jailPath) {
 /**
  * Create a new jail from template snapshot using semantic paths.
  * This is the preferred entry point for jail creation - no Docker translation needed.
+ * Ensures host directories exist, builds mount specs, and creates the jail.
  * @param {string} groupId - The group identifier
  * @param {Object} paths - Semantic mount paths
- * @param {string} paths.projectPath - Path to NanoClaw source (read-only)
- * @param {string} paths.groupPath - Path to this group's folder (read-write)
- * @param {string} paths.ipcPath - Path to this group's IPC directory (read-write)
- * @param {string} paths.claudeSessionPath - Path to Claude session data (read-write)
- * @param {string} paths.agentRunnerPath - Path to agent runner source (read-only)
- * @returns {Promise<{jailName: string, mounts: Array}>} - The jail name and mount specs for cleanup
+ * @param {string} [paths.projectPath] - Path to NanoClaw source (read-only)
+ * @param {string} [paths.groupPath] - Path to this group's folder (read-write)
+ * @param {string} [paths.ipcPath] - Path to this group's IPC directory (read-write)
+ * @param {string} [paths.claudeSessionPath] - Path to Claude session data (read-write)
+ * @param {string} [paths.agentRunnerPath] - Path to agent runner source (read-only)
+ * @returns {Promise<{jailName: string, mounts: Array<{hostPath: string, jailPath: string, readonly: boolean}>}>} The jail name and mount specs for cleanup
+ * @throws {Error} If jail creation fails
  */
 export async function createJailWithPaths(groupId, paths) {
   // Ensure host directories exist
@@ -469,9 +478,12 @@ export async function createJailWithPaths(groupId, paths) {
 
 /**
  * Create a new jail from template snapshot.
+ * Clones the ZFS template, creates mount points, configures networking, and starts the jail.
+ * Applies resource limits (rctl) to prevent runaway processes.
  * @param {string} groupId - The group identifier
- * @param {Array<{hostPath: string, jailPath: string, readonly: boolean}>} mounts - Mount specifications
- * @returns {Promise<string>} - The jail name
+ * @param {Array<{hostPath: string, jailPath: string, readonly: boolean}>} [mounts=[]] - Mount specifications
+ * @returns {Promise<string>} The jail name
+ * @throws {Error} If jail creation fails (triggers cleanup on failure)
  */
 export async function createJail(groupId, mounts = []) {
   const jailName = getJailName(groupId);
@@ -583,16 +595,19 @@ export async function createJail(groupId, mounts = []) {
 
 /**
  * Execute a command inside a jail.
+ * Runs as the 'node' user with configurable environment, working directory, and timeout.
+ * Supports abort signals and streaming output via callbacks.
  * @param {string} groupId - The group identifier
  * @param {string[]} command - Command and arguments to execute
- * @param {Object} options - Execution options
- * @param {Object} options.env - Environment variables
- * @param {string} options.cwd - Working directory inside jail
- * @param {number} options.timeout - Timeout in milliseconds
- * @param {AbortSignal} options.signal - AbortSignal to cancel execution
- * @param {Function} options.onStdout - Callback for stdout data
- * @param {Function} options.onStderr - Callback for stderr data
- * @returns {Promise<{code: number, stdout: string, stderr: string}>}
+ * @param {Object} [options={}] - Execution options
+ * @param {Object} [options.env={}] - Environment variables
+ * @param {string} [options.cwd] - Working directory inside jail
+ * @param {number} [options.timeout] - Timeout in milliseconds
+ * @param {AbortSignal} [options.signal] - AbortSignal to cancel execution
+ * @param {Function} [options.onStdout] - Callback for stdout data chunks
+ * @param {Function} [options.onStderr] - Callback for stderr data chunks
+ * @returns {Promise<{code: number, stdout: string, stderr: string}>} Exit code and output
+ * @throws {Error} If jail is not running, execution times out, or is aborted
  */
 export async function execInJail(groupId, command, options = {}) {
   const jailName = getJailName(groupId);
@@ -723,12 +738,14 @@ export async function execInJail(groupId, command, options = {}) {
 
 /**
  * Spawn an interactive process inside a jail (for streaming I/O).
+ * Returns a ChildProcess for direct control of stdin/stdout/stderr streams.
+ * Runs as the 'node' user with umask 002 for group-writable files.
  * @param {string} groupId - The group identifier
  * @param {string[]} command - Command and arguments to execute
- * @param {Object} options - Spawn options
- * @param {Object} options.env - Environment variables
- * @param {string} options.cwd - Working directory inside jail
- * @returns {ChildProcess}
+ * @param {Object} [options={}] - Spawn options
+ * @param {Object} [options.env={}] - Environment variables
+ * @param {string} [options.cwd] - Working directory inside jail
+ * @returns {import('child_process').ChildProcess} Child process handle with stdin/stdout/stderr streams
  */
 export function spawnInJail(groupId, command, options = {}) {
   const jailName = getJailName(groupId);
@@ -770,7 +787,10 @@ export function spawnInJail(groupId, command, options = {}) {
 
 /**
  * Stop a running jail.
+ * Attempts graceful shutdown first, then force stops if necessary.
  * @param {string} groupId - The group identifier
+ * @returns {Promise<void>}
+ * @throws {Error} If force stop fails
  */
 export async function stopJail(groupId) {
   const jailName = getJailName(groupId);
@@ -801,8 +821,11 @@ export async function stopJail(groupId) {
 
 /**
  * Clean up jail resources (unmount, destroy dataset, remove fstab, remove IP alias).
+ * Removes rctl limits, stops the jail, destroys epair interfaces, unmounts filesystems,
+ * and destroys the ZFS dataset. Safe to call even if jail is partially created.
  * @param {string} groupId - The group identifier
- * @param {Array<{hostPath: string, jailPath: string, readonly: boolean}>} mounts - Mount specifications (for unmounting)
+ * @param {Array<{hostPath: string, jailPath: string, readonly: boolean}>} [mounts=[]] - Mount specifications (for unmounting)
+ * @returns {Promise<void>}
  */
 export async function cleanupJail(groupId, mounts = []) {
   const jailName = getJailName(groupId);
@@ -862,15 +885,21 @@ export async function cleanupJail(groupId, mounts = []) {
 
 /**
  * Destroy a jail completely (stop + cleanup).
+ * Convenience function that calls cleanupJail to perform full teardown.
  * @param {string} groupId - The group identifier
- * @param {Array} mounts - Mount specifications
+ * @param {Array<{hostPath: string, jailPath: string, readonly: boolean}>} [mounts=[]] - Mount specifications
+ * @returns {Promise<void>}
  */
 export async function destroyJail(groupId, mounts = []) {
   // cleanupJail handles stopping if needed, unmounting, and ZFS cleanup
   await cleanupJail(groupId, mounts);
 }
 
-/** Ensure the jail subsystem is available. */
+/**
+ * Ensure the jail subsystem is available.
+ * Verifies ZFS, template snapshot, and jail command are present.
+ * @throws {Error} If jail runtime requirements are not met
+ */
 export function ensureJailRuntimeRunning() {
   try {
     // Check ZFS is available
@@ -913,7 +942,12 @@ export function ensureJailRuntimeRunning() {
   }
 }
 
-/** Kill orphaned NanoClaw jails from previous runs. */
+/**
+ * Kill orphaned NanoClaw jails from previous runs.
+ * Finds all jails with 'nanoclaw_' prefix, stops them, removes rctl limits,
+ * unmounts filesystems, destroys datasets, and cleans up epair interfaces.
+ * Called at startup to ensure clean state.
+ */
 export function cleanupOrphans() {
   try {
     // List all running jails with nanoclaw_ prefix
@@ -1036,6 +1070,8 @@ export function cleanupOrphans() {
 /**
  * Clean up all running NanoClaw jails.
  * Called during shutdown to ensure devfs is unmounted and ZFS datasets can be destroyed.
+ * Performs orderly teardown: removes rctl limits, stops jails, unmounts filesystems,
+ * destroys datasets and epair interfaces.
  * @returns {Promise<void>}
  */
 export async function cleanupAllJails() {

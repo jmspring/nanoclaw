@@ -457,9 +457,33 @@ Host                          Jail
 
 Each jail gets its own /30 subnet. Multiple jails can run simultaneously without IP conflicts (each has its own vnet).
 
-#### pf Configuration
+#### pf Firewall Configuration
 
-Install the pf rules:
+NanoClaw provides two pf configuration files for different scenarios. Choose the appropriate one based on whether you already have pf configured on your system.
+
+##### Choosing the Right Configuration File
+
+**Option A: Standalone Configuration (`etc/pf-nanoclaw.conf`)**
+
+Use this file when:
+- pf is **NOT** already configured on your system
+- You want a complete, self-contained pf ruleset
+- You don't have an existing `/etc/pf.conf` file
+
+This provides a complete firewall configuration that handles all rules for both NanoClaw jails and the host system.
+
+**Option B: Anchor Configuration (`etc/pf-nanoclaw-anchor.conf`)**
+
+Use this file when:
+- You **ALREADY HAVE** `/etc/pf.conf` configured
+- You want to integrate NanoClaw rules into your existing pf setup
+- You need to preserve other existing firewall rules
+
+This adds NanoClaw-specific rules via an anchor without disrupting your existing configuration.
+
+##### Setup: Standalone Configuration
+
+If pf is not yet configured on your system:
 
 ```sh
 # Enable IP forwarding (required for NAT)
@@ -478,6 +502,40 @@ sudo pfctl -f /home/jims/code/nanoclaw/src/etc/pf-nanoclaw.conf
 # Enable pf
 sudo pfctl -e
 ```
+
+##### Setup: Anchor Configuration
+
+If you already have `/etc/pf.conf` configured:
+
+```sh
+# Enable IP forwarding (required for NAT)
+sudo sysctl net.inet.ip.forwarding=1
+echo 'net.inet.ip.forwarding=1' | sudo tee -a /etc/sysctl.conf
+
+# Edit your existing /etc/pf.conf and add these lines:
+#
+# Near the top with other macros:
+#   nanoclaw_net = "10.99.0.0/24"
+#   nanoclaw_gw = "10.99.0.1"
+#   nanoclaw_if = "lo1"
+#
+# In the NAT section, before filter rules:
+#   nat-anchor "nanoclaw"
+#   nat on egress from $nanoclaw_net to any -> (egress:0)
+#
+# In the filter rules section:
+#   anchor "nanoclaw"
+#   load anchor "nanoclaw" from "/home/jims/code/nanoclaw/src/etc/pf-nanoclaw-anchor.conf"
+
+# Reload your pf configuration
+sudo pfctl -f /etc/pf.conf
+```
+
+**Important Notes:**
+- Both configurations provide the same network isolation for jails
+- The standalone version is simpler for new pf setups
+- The anchor version preserves your existing firewall rules
+- Adjust the path to `pf-nanoclaw-anchor.conf` to match your NanoClaw installation location
 
 #### pf Rules Explained
 
