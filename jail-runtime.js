@@ -250,6 +250,51 @@ function datasetExists(dataset) {
 }
 
 /**
+ * Check if ZFS pool has sufficient available space before cloning.
+ * Prevents cryptic errors and incomplete cleanup when pool is full.
+ * @param {string} pool - The ZFS pool name (e.g., "zroot")
+ * @param {number} minAvailableGB - Minimum required space in GB (default: 1GB)
+ * @throws {Error} If pool has insufficient space
+ */
+function checkPoolCapacity(pool, minAvailableGB = 1) {
+  try {
+    const result = execFileSync('zfs', ['list', '-H', '-o', 'available', pool], {
+      encoding: 'utf8',
+      stdio: 'pipe'
+    });
+    const availableStr = result.trim();
+
+    // Parse the available space (can be in K, M, G, T, P format)
+    const match = availableStr.match(/^([\d.]+)([KMGTP]?)$/);
+    if (!match) {
+      throw new Error(`Unable to parse available space: ${availableStr}`);
+    }
+
+    const value = parseFloat(match[1]);
+    const unit = match[2] || 'B';
+
+    // Convert to GB
+    const multipliers = { 'K': 1e-6, 'M': 1e-3, 'G': 1, 'T': 1000, 'P': 1e6, 'B': 1e-9 };
+    const availableGB = value * (multipliers[unit] || 1);
+
+    if (availableGB < minAvailableGB) {
+      throw new Error(
+        `Insufficient ZFS pool space: ${availableStr} available on ${pool}, ` +
+        `but ${minAvailableGB}GB required. Free up space before creating new jails.`
+      );
+    }
+
+    log(`ZFS pool capacity check passed`, { pool, available: availableStr, requiredGB: minAvailableGB });
+  } catch (error) {
+    if (error.message.includes('Insufficient ZFS pool space')) {
+      throw error;
+    }
+    // If we can't check capacity, log warning but don't fail
+    log(`Warning: could not check ZFS pool capacity: ${error.message}`, { pool });
+  }
+}
+
+/**
  * Jail-native mount layout.
  * These are the 5 semantic mounts a jail needs - no Docker translation.
  */
@@ -516,6 +561,10 @@ export async function createJail(groupId, mounts = []) {
   }
 
   try {
+    // Check ZFS pool capacity before clone to prevent cryptic errors
+    const pool = dataset.split('/')[0]; // Extract pool name (e.g., "zroot" from "zroot/nanoclaw/jails/...")
+    checkPoolCapacity(pool, 1); // Require at least 1GB available
+
     // Clone template snapshot
     log(`Cloning template`, { snapshot, dataset });
     await sudoExec(['zfs', 'clone', snapshot, dataset]);
