@@ -45,6 +45,52 @@ function log(message, data = {}) {
   console.log(`[jail-runtime] ${timestamp} ${message}${dataStr}`);
 }
 
+/** Cleanup audit logging */
+const CLEANUP_AUDIT_LOG = path.join(JAIL_CONFIG.jailsPath, 'cleanup-audit.log');
+
+function logCleanupAudit(action, jailName, status, error = null) {
+  const timestamp = new Date().toISOString();
+  const entry = {
+    timestamp,
+    action,
+    jailName,
+    status,
+    error: error ? error.message : null,
+  };
+  const logLine = `${timestamp} [${status}] ${action} ${jailName}${error ? ` - ${error.message}` : ''}\n`;
+
+  try {
+    fs.appendFileSync(CLEANUP_AUDIT_LOG, logLine);
+  } catch (err) {
+    console.error(`Failed to write cleanup audit log: ${err.message}`);
+  }
+}
+
+/**
+ * Retry a function with exponential backoff.
+ * @param {Function} fn - Async function to retry
+ * @param {number} maxRetries - Maximum number of retries (default: 3)
+ * @param {number} initialDelay - Initial delay in ms (default: 100)
+ * @param {number} maxDelay - Maximum delay in ms (default: 5000)
+ * @returns {Promise<any>} - Result of the function
+ */
+async function retryWithBackoff(fn, maxRetries = 3, initialDelay = 100, maxDelay = 5000) {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxRetries) {
+        const delay = Math.min(initialDelay * Math.pow(2, attempt), maxDelay);
+        log(`Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, { error: error.message });
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastError;
+}
+
 /** Sanitize groupId for use in jail names (alphanumeric + underscore only) */
 export function sanitizeJailName(groupId) {
   return groupId.replace(/[^a-zA-Z0-9_]/g, '_');
@@ -914,6 +960,107 @@ export async function stopJail(groupId) {
 }
 
 /**
+ * Force cleanup of a jail using aggressive methods when normal cleanup fails.
+ * This kills all processes, force unmounts, and force destroys datasets.
+ * @param {string} jailName - The jail name
+ * @param {Array<{hostPath: string, jailPath: string, readonly: boolean}>} mounts - Mount specifications
+ * @param {string} dataset - The ZFS dataset path
+ * @param {string} jailPath - The jail filesystem path
+ * @param {string|null} epairNum - The epair number if in restricted network mode
+ */
+async function forceCleanup(jailName, mounts, dataset, jailPath, epairNum = null) {
+  log(`Starting force cleanup`, { jailName });
+  logCleanupAudit('FORCE_CLEANUP_START', jailName, 'INFO');
+
+  const errors = [];
+
+  // 1. Kill all processes in jail (if still running)
+  if (isJailRunning(jailName)) {
+    try {
+      await sudoExec(['jexec', jailName, 'kill', '-9', '-1'], { timeout: 5000 });
+      log(`Killed all processes in jail`, { jailName });
+      logCleanupAudit('KILL_PROCESSES', jailName, 'SUCCESS');
+    } catch (error) {
+      log(`Could not kill processes in jail: ${error.message}`, { jailName });
+      logCleanupAudit('KILL_PROCESSES', jailName, 'FAILED', error);
+      errors.push(new Error(`Failed to kill processes: ${error.message}`));
+    }
+
+    // 2. Force stop jail
+    try {
+      await sudoExec(['jail', '-r', jailName], { timeout: 10000 });
+      log(`Force stopped jail`, { jailName });
+      logCleanupAudit('FORCE_STOP_JAIL', jailName, 'SUCCESS');
+    } catch (error) {
+      log(`Could not force stop jail: ${error.message}`, { jailName });
+      logCleanupAudit('FORCE_STOP_JAIL', jailName, 'FAILED', error);
+      errors.push(new Error(`Failed to force stop jail: ${error.message}`));
+    }
+  }
+
+  // 3. Force unmount devfs
+  try {
+    await sudoExec(['umount', '-f', path.join(jailPath, 'dev')], { timeout: 5000 });
+    log(`Force unmounted devfs`, { jailName });
+    logCleanupAudit('FORCE_UNMOUNT_DEVFS', jailName, 'SUCCESS');
+  } catch (error) {
+    // Expected to fail if not mounted
+    log(`Could not force unmount devfs (may not be mounted): ${error.message}`, { jailName });
+  }
+
+  // 4. Force unmount all nullfs mounts
+  for (let i = mounts.length - 1; i >= 0; i--) {
+    const mount = mounts[i];
+    const targetPath = path.join(jailPath, mount.jailPath);
+    try {
+      await sudoExec(['umount', '-f', targetPath], { timeout: 5000 });
+      log(`Force unmounted ${targetPath}`);
+      logCleanupAudit('FORCE_UNMOUNT_NULLFS', jailName, 'SUCCESS', null);
+    } catch (error) {
+      log(`Could not force unmount ${targetPath}: ${error.message}`);
+      logCleanupAudit('FORCE_UNMOUNT_NULLFS', jailName, 'FAILED', error);
+      errors.push(new Error(`Failed to force unmount ${targetPath}: ${error.message}`));
+    }
+  }
+
+  // 5. Force destroy ZFS dataset with all dependents
+  if (datasetExists(dataset)) {
+    try {
+      await sudoExec(['zfs', 'destroy', '-f', '-r', dataset], { timeout: 30000 });
+      log(`Force destroyed dataset`, { dataset });
+      logCleanupAudit('FORCE_DESTROY_DATASET', jailName, 'SUCCESS');
+    } catch (error) {
+      log(`Could not force destroy dataset: ${error.message}`, { dataset });
+      logCleanupAudit('FORCE_DESTROY_DATASET', jailName, 'FAILED', error);
+      errors.push(new Error(`Failed to force destroy dataset: ${error.message}`));
+    }
+  }
+
+  // 6. Destroy epair (if in restricted network mode)
+  if (epairNum !== null) {
+    try {
+      const hostIface = `epair${epairNum}a`;
+      await sudoExec(['ifconfig', hostIface, 'destroy'], { timeout: 5000 });
+      log(`Force destroyed epair`, { epairNum });
+      logCleanupAudit('FORCE_DESTROY_EPAIR', jailName, 'SUCCESS');
+    } catch (error) {
+      log(`Could not force destroy epair: ${error.message}`, { epairNum });
+      logCleanupAudit('FORCE_DESTROY_EPAIR', jailName, 'FAILED', error);
+      errors.push(new Error(`Failed to force destroy epair: ${error.message}`));
+    }
+  }
+
+  if (errors.length > 0) {
+    logCleanupAudit('FORCE_CLEANUP_END', jailName, 'PARTIAL', new Error(`${errors.length} errors during force cleanup`));
+    throw new AggregateError(errors, `Force cleanup completed with ${errors.length} error(s)`);
+  } else {
+    logCleanupAudit('FORCE_CLEANUP_END', jailName, 'SUCCESS');
+  }
+
+  log(`Force cleanup completed`, { jailName, errorCount: errors.length });
+}
+
+/**
  * Clean up jail resources (unmount, destroy dataset, remove fstab, remove IP alias).
  * @param {string} groupId - The group identifier
  * @param {Array<{hostPath: string, jailPath: string, readonly: boolean}>} mounts - Mount specifications (for unmounting)
@@ -925,53 +1072,133 @@ export async function cleanupJail(groupId, mounts = []) {
   const fstabPath = getFstabPath(jailName);
 
   log(`Cleaning up jail`, { jailName });
+  logCleanupAudit('CLEANUP_START', jailName, 'INFO');
+
+  const errors = [];
+  const epairNum = JAIL_CONFIG.networkMode === 'restricted' && assignedEpairs.has(groupId)
+    ? assignedEpairs.get(groupId)
+    : null;
 
   // Remove rctl limits before stopping jail
   await removeRctlLimits(jailName);
 
-  // Stop jail if running
-  if (isJailRunning(jailName)) {
+  try {
+    // Stop jail if running (with retry)
+    if (isJailRunning(jailName)) {
+      try {
+        await retryWithBackoff(async () => {
+          await stopJail(groupId);
+          if (isJailRunning(jailName)) {
+            throw new Error('Jail still running after stop');
+          }
+        }, 2, 500, 2000);
+        logCleanupAudit('STOP_JAIL', jailName, 'SUCCESS');
+      } catch (error) {
+        log(`Warning: could not stop jail during cleanup: ${error.message}`);
+        logCleanupAudit('STOP_JAIL', jailName, 'FAILED', error);
+        errors.push(new Error(`Failed to stop jail: ${error.message}`));
+      }
+    }
+
+    // Destroy epair if in restricted network mode (with retry)
+    if (epairNum !== null) {
+      try {
+        await retryWithBackoff(async () => {
+          await releaseEpair(groupId);
+        }, 2, 200, 1000);
+        logCleanupAudit('RELEASE_EPAIR', jailName, 'SUCCESS');
+      } catch (error) {
+        log(`Warning: could not release epair: ${error.message}`);
+        logCleanupAudit('RELEASE_EPAIR', jailName, 'FAILED', error);
+        errors.push(new Error(`Failed to release epair: ${error.message}`));
+      }
+    }
+
+    // Unmount devfs first (required before nullfs unmounts and zfs destroy)
     try {
-      await stopJail(groupId);
+      await sudoExec(['umount', '-f', path.join(jailPath, 'dev')]);
+      logCleanupAudit('UNMOUNT_DEVFS', jailName, 'SUCCESS');
     } catch (error) {
-      log(`Warning: could not stop jail during cleanup: ${error.message}`);
+      // Expected to fail if devfs not mounted, don't add to errors
+      log(`Devfs unmount (expected to fail if not mounted): ${error.message}`);
+    }
+
+    // Unmount nullfs mounts (with retry)
+    if (mounts.length > 0) {
+      try {
+        await retryWithBackoff(async () => {
+          await unmountAll(mounts, jailPath);
+        }, 2, 300, 2000);
+        logCleanupAudit('UNMOUNT_NULLFS', jailName, 'SUCCESS');
+      } catch (error) {
+        log(`Warning: could not unmount all filesystems: ${error.message}`);
+        logCleanupAudit('UNMOUNT_NULLFS', jailName, 'FAILED', error);
+        errors.push(new Error(`Failed to unmount filesystems: ${error.message}`));
+      }
+    }
+
+    // Destroy ZFS dataset (with retry)
+    if (datasetExists(dataset)) {
+      try {
+        await retryWithBackoff(async () => {
+          await sudoExec(['zfs', 'destroy', '-r', dataset]);
+          if (datasetExists(dataset)) {
+            throw new Error('Dataset still exists after destroy');
+          }
+        }, 2, 500, 3000);
+        log(`Destroyed dataset`, { dataset });
+        logCleanupAudit('DESTROY_DATASET', jailName, 'SUCCESS');
+      } catch (error) {
+        log(`Warning: could not destroy dataset: ${error.message}`);
+        logCleanupAudit('DESTROY_DATASET', jailName, 'FAILED', error);
+        errors.push(new Error(`Failed to destroy dataset: ${error.message}`));
+      }
+    }
+
+    // Remove fstab file
+    if (fs.existsSync(fstabPath)) {
+      try {
+        fs.unlinkSync(fstabPath);
+        log(`Removed fstab`, { fstabPath });
+        logCleanupAudit('REMOVE_FSTAB', jailName, 'SUCCESS');
+      } catch (error) {
+        log(`Warning: could not remove fstab: ${error.message}`);
+        logCleanupAudit('REMOVE_FSTAB', jailName, 'FAILED', error);
+        errors.push(new Error(`Failed to remove fstab: ${error.message}`));
+      }
+    }
+  } catch (unexpectedError) {
+    log(`Unexpected error during cleanup: ${unexpectedError.message}`, { jailName });
+    logCleanupAudit('CLEANUP_UNEXPECTED_ERROR', jailName, 'FAILED', unexpectedError);
+    errors.push(unexpectedError);
+  } finally {
+    // If normal cleanup had errors, try force cleanup
+    if (errors.length > 0) {
+      log(`Normal cleanup failed with ${errors.length} error(s), attempting force cleanup`, { jailName });
+      logCleanupAudit('CLEANUP_FALLBACK_TO_FORCE', jailName, 'INFO');
+
+      try {
+        await forceCleanup(jailName, mounts, dataset, jailPath, epairNum);
+        log(`Force cleanup succeeded after normal cleanup failed`, { jailName });
+        logCleanupAudit('CLEANUP_END', jailName, 'SUCCESS_FORCED');
+      } catch (forceError) {
+        log(`Force cleanup also failed`, { jailName, error: forceError.message });
+        logCleanupAudit('CLEANUP_END', jailName, 'FAILED', forceError);
+
+        // Aggregate all errors from both attempts
+        if (forceError instanceof AggregateError) {
+          errors.push(...forceError.errors);
+        } else {
+          errors.push(forceError);
+        }
+
+        throw new AggregateError(errors, `Jail cleanup failed (tried normal and force): ${errors.length} error(s)`);
+      }
+    } else {
+      log(`Jail cleanup completed successfully`, { jailName });
+      logCleanupAudit('CLEANUP_END', jailName, 'SUCCESS');
     }
   }
-
-  // Destroy epair if in restricted network mode
-  if (JAIL_CONFIG.networkMode === 'restricted' && assignedEpairs.has(groupId)) {
-    await releaseEpair(groupId);
-  }
-
-  // Unmount devfs first (required before nullfs unmounts and zfs destroy)
-  await sudoExec(['umount', '-f', path.join(jailPath, 'dev')]).catch(() => {});
-
-  // Unmount nullfs mounts
-  if (mounts.length > 0) {
-    await unmountAll(mounts, jailPath);
-  }
-
-  // Destroy ZFS dataset
-  if (datasetExists(dataset)) {
-    try {
-      await sudoExec(['zfs', 'destroy', '-r', dataset]);
-      log(`Destroyed dataset`, { dataset });
-    } catch (error) {
-      log(`Warning: could not destroy dataset: ${error.message}`);
-    }
-  }
-
-  // Remove fstab file
-  if (fs.existsSync(fstabPath)) {
-    try {
-      fs.unlinkSync(fstabPath);
-      log(`Removed fstab`, { fstabPath });
-    } catch (error) {
-      log(`Warning: could not remove fstab: ${error.message}`);
-    }
-  }
-
-  log(`Jail cleanup completed`, { jailName });
 }
 
 /**
