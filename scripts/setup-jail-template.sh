@@ -115,6 +115,7 @@ sudo jail -c \
     ip6=inherit \
     allow.raw_sockets \
     mount.devfs \
+    devfs_ruleset=10 \
     persist
 
 log "Jail started: $TEMP_JAIL_NAME"

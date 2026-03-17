@@ -530,6 +530,7 @@ export async function createJail(groupId, mounts = []) {
       'allow.sysvipc',
       'enforce_statfs=1',
       'mount.devfs',
+      'devfs_ruleset=10', // Apply restrictive devfs ruleset (see etc/devfs.rules)
     );
 
     log(`Starting jail`, { jailName, params: jailParams.slice(2) });
