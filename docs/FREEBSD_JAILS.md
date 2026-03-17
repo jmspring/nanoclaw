@@ -144,7 +144,7 @@ npm --version
 ```sh
 cd /home/youruser/code
 git clone https://github.com/yourorg/nanoclaw.git
-cd nanoclaw/src
+cd nanoclaw/src  # Working directory is src/ not the repo root
 ```
 
 ### Step 4: Install devfs Ruleset
@@ -162,39 +162,37 @@ This ruleset restricts device access inside jails to prevent potential jail esca
 ### Step 5: Create ZFS Datasets
 
 ```sh
-# Create the jail hierarchy
+# Create the jail hierarchy (adjust zroot to your pool name)
 sudo zfs create -p zroot/nanoclaw/jails/template
 
-# Create directories
-mkdir -p /home/youruser/code/nanoclaw/jails
-mkdir -p /home/youruser/code/nanoclaw/workspaces
-mkdir -p /home/youruser/code/nanoclaw/ipc
+# The template will be mounted at a mountpoint that matches JAIL_CONFIG.jailsPath
+# Verify mountpoint: zfs get mountpoint zroot/nanoclaw/jails/template
+# Default is /zroot/nanoclaw/jails/template
+
+# Create directories for per-group storage (created automatically by orchestrator)
+# These are NOT mounted into jails - they live on the host
+mkdir -p /home/youruser/code/nanoclaw/src/groups
+mkdir -p /home/youruser/code/nanoclaw/src/ipc
+mkdir -p /home/youruser/code/nanoclaw/src/data/sessions
 ```
 
 ### Step 6: Build the Jail Template
 
 ```sh
-# Fetch FreeBSD base system
-cd /home/youruser/code/nanoclaw/jails
-sudo fetch https://download.freebsd.org/releases/amd64/15.0-RELEASE/base.txz
-
-# Extract to template
-sudo tar -xf base.txz -C template
-
-# Install packages inside template
-sudo pkg -c template install -y node24 npm-node24
-
-# Create node user (uid 1000) in template
-sudo pw -R template useradd node -u 1000 -g wheel -d /home/node -s /bin/sh
-sudo mkdir -p template/home/node
-sudo chown 1000:0 template/home/node
-
-# Copy DNS configuration
-sudo cp /etc/resolv.conf template/etc/resolv.conf
-
 # Run the template setup script
+cd /home/youruser/code/nanoclaw/src
 ./scripts/setup-jail-template.sh
 ```
+
+The script will:
+- Fetch FreeBSD base system (base.txz)
+- Extract to template dataset
+- Install Node.js and npm
+- Create node user (uid 1000)
+- Install global packages (TypeScript, Claude Code)
+- Copy agent-runner source
+- Set up directory structure
+- Create template snapshot
 
 ### Step 7: Configure Environment
 
@@ -360,11 +358,13 @@ The jail has 5 semantic mounts:
 
 | Jail Path | Host Path | Mode | Purpose |
 |-----------|-----------|------|---------|
-| `/workspace/project` | NanoClaw source | ro | Project code access (main only) |
-| `/workspace/group` | `groups/{name}` | rw | Group's workspace and CLAUDE.md |
-| `/workspace/ipc` | `ipc/{name}` | rw | IPC messages, tasks, input queue |
-| `/home/node/.claude` | `data/sessions/{name}/.claude` | rw | Claude session data |
-| `/app/src` | `container/agent-runner/src` | ro | Agent runner TypeScript source |
+| `/workspace/project` | `{project_root}` | ro | Project code access (main only) |
+| `/workspace/group` | `{project_root}/groups/{name}` | rw | Group's workspace and CLAUDE.md |
+| `/workspace/ipc` | `{project_root}/data/ipc/{name}` | rw | IPC messages, tasks, input queue |
+| `/home/node/.claude` | `{project_root}/data/sessions/{name}/.claude` | rw | Claude session data |
+| `/app/src` | `{project_root}/container/agent-runner/src` | ro | Agent runner TypeScript source |
+
+**Note**: `{project_root}` is the NanoClaw source directory (typically `/home/youruser/code/nanoclaw/src`), resolved from `process.cwd()` at runtime.
 
 ### Networking Modes
 
@@ -492,12 +492,15 @@ sudo sysctl net.inet.ip.forwarding=1
 # Make persistent
 echo 'net.inet.ip.forwarding=1' | sudo tee -a /etc/sysctl.conf
 
-# Enable pf in /etc/rc.conf
+# Enable pf in /etc/rc.conf (adjust path to match your installation)
 sudo sysrc pf_enable="YES"
-sudo sysrc pf_rules="/home/jims/code/nanoclaw/src/etc/pf-nanoclaw.conf"
+sudo sysrc pf_rules="/usr/local/etc/pf-nanoclaw.conf"
+
+# Copy the ruleset to a system location (or use absolute path in pf_rules)
+sudo cp /home/youruser/code/nanoclaw/src/etc/pf-nanoclaw.conf /usr/local/etc/
 
 # Load the ruleset
-sudo pfctl -f /home/jims/code/nanoclaw/src/etc/pf-nanoclaw.conf
+sudo pfctl -f /usr/local/etc/pf-nanoclaw.conf
 
 # Enable pf
 sudo pfctl -e
@@ -525,7 +528,10 @@ echo 'net.inet.ip.forwarding=1' | sudo tee -a /etc/sysctl.conf
 #
 # In the filter rules section:
 #   anchor "nanoclaw"
-#   load anchor "nanoclaw" from "/home/jims/code/nanoclaw/src/etc/pf-nanoclaw-anchor.conf"
+#   load anchor "nanoclaw" from "/usr/local/etc/pf-nanoclaw-anchor.conf"
+
+# Copy the anchor file to a system location
+sudo cp /home/youruser/code/nanoclaw/src/etc/pf-nanoclaw-anchor.conf /usr/local/etc/
 
 # Reload your pf configuration
 sudo pfctl -f /etc/pf.conf
@@ -578,7 +584,7 @@ pass out quick on $ext_if proto tcp from $jail_net to <github_api> port 443 keep
 Reload rules:
 
 ```sh
-sudo pfctl -f /home/jims/code/nanoclaw/src/etc/pf-nanoclaw.conf
+sudo pfctl -f /usr/local/etc/pf-nanoclaw.conf
 ```
 
 #### Verifying Network Isolation
@@ -624,26 +630,27 @@ Directories use setgid (mode 2775) so new files inherit the wheel group, allowin
 
 ### Sudoers Configuration
 
-Add to `/usr/local/etc/sudoers.d/nanoclaw`:
+Add to `/usr/local/etc/sudoers.d/nanoclaw` (replace `youruser` with your actual username):
 
 ```
 # Jail operations
-jims ALL=(ALL) NOPASSWD: /usr/sbin/jail
-jims ALL=(ALL) NOPASSWD: /usr/sbin/jexec
-jims ALL=(ALL) NOPASSWD: /usr/sbin/jls
+youruser ALL=(ALL) NOPASSWD: /usr/sbin/jail
+youruser ALL=(ALL) NOPASSWD: /usr/sbin/jexec
+youruser ALL=(ALL) NOPASSWD: /usr/sbin/jls
 
 # ZFS operations
-jims ALL=(ALL) NOPASSWD: /sbin/zfs
+youruser ALL=(ALL) NOPASSWD: /sbin/zfs
 
 # Mount operations
-jims ALL=(ALL) NOPASSWD: /sbin/mount*
-jims ALL=(ALL) NOPASSWD: /sbin/umount
+youruser ALL=(ALL) NOPASSWD: /sbin/mount*
+youruser ALL=(ALL) NOPASSWD: /sbin/umount
 
 # Network operations (for restricted mode)
-jims ALL=(ALL) NOPASSWD: /sbin/ifconfig
+youruser ALL=(ALL) NOPASSWD: /sbin/ifconfig
+youruser ALL=(ALL) NOPASSWD: /sbin/route
 
 # Resource limits (rctl)
-jims ALL=(ALL) NOPASSWD: /usr/bin/rctl
+youruser ALL=(ALL) NOPASSWD: /usr/bin/rctl
 ```
 
 ## 7. Template Management
@@ -871,12 +878,16 @@ sudo jexec nanoclaw_groupname ls -la /dev
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NANOCLAW_RUNTIME` | `docker` | Set to `jail` for FreeBSD jails |
-| `ANTHROPIC_API_KEY` | — | API key for Claude |
+| `ANTHROPIC_API_KEY` | — | API key for Claude (loaded by credential proxy only) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | — | OAuth token for Claude Code (alternative to API key) |
 | `NANOCLAW_JAIL_NETWORK_MODE` | `inherit` | `inherit` or `restricted` |
 | `NANOCLAW_JAIL_MEMORY_LIMIT` | `2G` | Memory limit per jail (rctl) |
 | `NANOCLAW_JAIL_MAXPROC` | `100` | Max processes per jail (prevents fork bombs) |
 | `NANOCLAW_JAIL_PCPU` | `80` | CPU percentage limit per jail |
 | `CREDENTIAL_PROXY_PORT` | `3001` | Port for credential proxy |
+| `CONTAINER_TIMEOUT` | `1800000` | Container timeout in milliseconds (30 minutes) |
+| `IDLE_TIMEOUT` | `1800000` | Idle timeout in milliseconds (30 minutes) |
+| `LOG_LEVEL` | `info` | Logging level: trace, debug, info, warn, error |
 
 ### jail-runtime.js Constants
 
@@ -885,9 +896,9 @@ export const JAIL_CONFIG = {
   templateDataset: 'zroot/nanoclaw/jails/template',
   templateSnapshot: 'base',
   jailsDataset: 'zroot/nanoclaw/jails',
-  jailsPath: '/home/jims/code/nanoclaw/jails',
-  workspacesPath: '/home/jims/code/nanoclaw/workspaces',
-  ipcPath: '/home/jims/code/nanoclaw/ipc',
+  jailsPath: '/home/jims/code/nanoclaw/jails',  // ZFS mountpoint for jail clones
+  // Note: workspacesPath and ipcPath are NOT used by jail-runtime
+  // Paths are resolved by container-runner.ts using buildJailMountPaths()
   networkMode: process.env.NANOCLAW_JAIL_NETWORK_MODE || 'inherit',
   jailHostIP: '10.99.0.1',
   jailIP: '10.99.0.2',
@@ -900,7 +911,10 @@ export const JAIL_CONFIG = {
 };
 ```
 
-Update these values in `jail-runtime.js` if your paths differ.
+**Important paths to configure:**
+- `jailsPath`: Must match the ZFS mountpoint for `zroot/nanoclaw/jails`
+- `templateDataset`: ZFS dataset path for the template
+- Other paths (groups, ipc, sessions) are resolved from `process.cwd()` in container-runner.ts
 
 ### pf-nanoclaw.conf Customization
 
@@ -924,42 +938,43 @@ Complete sudoers configuration at `/usr/local/etc/sudoers.d/nanoclaw`:
 
 ```
 # NanoClaw jail runtime operations
-# Replace 'jims' with your username
+# Replace 'youruser' with your username
 
 # Jail management
-jims ALL=(ALL) NOPASSWD: /usr/sbin/jail
-jims ALL=(ALL) NOPASSWD: /usr/sbin/jexec
-jims ALL=(ALL) NOPASSWD: /usr/sbin/jls
+youruser ALL=(ALL) NOPASSWD: /usr/sbin/jail
+youruser ALL=(ALL) NOPASSWD: /usr/sbin/jexec
+youruser ALL=(ALL) NOPASSWD: /usr/sbin/jls
 
 # ZFS operations
-jims ALL=(ALL) NOPASSWD: /sbin/zfs
+youruser ALL=(ALL) NOPASSWD: /sbin/zfs
 
 # Filesystem operations
-jims ALL=(ALL) NOPASSWD: /sbin/mount
-jims ALL=(ALL) NOPASSWD: /sbin/mount_nullfs
-jims ALL=(ALL) NOPASSWD: /sbin/umount
+youruser ALL=(ALL) NOPASSWD: /sbin/mount
+youruser ALL=(ALL) NOPASSWD: /sbin/mount_nullfs
+youruser ALL=(ALL) NOPASSWD: /sbin/umount
 
 # Network operations (restricted mode only)
-jims ALL=(ALL) NOPASSWD: /sbin/ifconfig
-jims ALL=(ALL) NOPASSWD: /sbin/route
+youruser ALL=(ALL) NOPASSWD: /sbin/ifconfig
+youruser ALL=(ALL) NOPASSWD: /sbin/route
 
 # Resource limits (rctl)
-jims ALL=(ALL) NOPASSWD: /usr/bin/rctl
+youruser ALL=(ALL) NOPASSWD: /usr/bin/rctl
 
-# Directory operations
-jims ALL=(ALL) NOPASSWD: /bin/mkdir
-jims ALL=(ALL) NOPASSWD: /bin/chmod
-jims ALL=(ALL) NOPASSWD: /usr/sbin/chown
-jims ALL=(ALL) NOPASSWD: /bin/cp
-jims ALL=(ALL) NOPASSWD: /bin/sh
-jims ALL=(ALL) NOPASSWD: /bin/cat
+# Directory operations (used by jail-runtime.js)
+youruser ALL=(ALL) NOPASSWD: /bin/mkdir
+youruser ALL=(ALL) NOPASSWD: /bin/chmod
+youruser ALL=(ALL) NOPASSWD: /usr/sbin/chown
+youruser ALL=(ALL) NOPASSWD: /bin/sh
 ```
+
+**Note**: The jail-runtime.js uses `sudo sh -c` for complex operations like writing files inside jails, so `/bin/sh` permission is required.
 
 ---
 
 ## Notes
 
-- **Test system**: This documentation was developed on "scratchy" (FreeBSD 15.0-RELEASE amd64)
-- **ZFS pool**: Examples use `zroot` — adjust for your pool name
-- **User**: Examples use `jims` — replace with your username
-- **Interface**: Examples use `re0` — check your interface with `ifconfig`
+- **Test system**: This documentation was developed on FreeBSD 15.0-RELEASE amd64
+- **ZFS pool**: Examples use `zroot` — adjust for your pool name (check with `zfs list`)
+- **User**: Examples use `youruser` — replace with your actual username
+- **Interface**: Examples use `re0` — check your interface with `ifconfig` or `route get 8.8.8.8`
+- **Working directory**: All commands assume you're in `/path/to/nanoclaw/src` (not the repo root)
