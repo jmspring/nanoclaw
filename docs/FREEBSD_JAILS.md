@@ -116,9 +116,9 @@ pflog_load="YES"
 # Add user to wheel group if not already
 pw groupmod wheel -m youruser
 
-# Configure sudoers (visudo)
+# Configure sudoers (visudo or create /usr/local/etc/sudoers.d/nanoclaw)
 # Add this line:
-youruser ALL=(ALL) NOPASSWD: /usr/sbin/jail, /usr/sbin/jexec, /sbin/zfs, /sbin/mount*, /sbin/umount, /sbin/ifconfig
+youruser ALL=(ALL) NOPASSWD: /usr/sbin/jail, /usr/sbin/jexec, /usr/sbin/jls, /sbin/zfs, /sbin/mount*, /sbin/umount, /sbin/ifconfig, /usr/bin/rctl
 ```
 
 ## 3. Quick Start
@@ -641,6 +641,9 @@ jims ALL=(ALL) NOPASSWD: /sbin/umount
 
 # Network operations (for restricted mode)
 jims ALL=(ALL) NOPASSWD: /sbin/ifconfig
+
+# Resource limits (rctl)
+jims ALL=(ALL) NOPASSWD: /usr/bin/rctl
 ```
 
 ## 7. Template Management
@@ -870,6 +873,10 @@ sudo jexec nanoclaw_groupname ls -la /dev
 | `NANOCLAW_RUNTIME` | `docker` | Set to `jail` for FreeBSD jails |
 | `ANTHROPIC_API_KEY` | — | API key for Claude |
 | `NANOCLAW_JAIL_NETWORK_MODE` | `inherit` | `inherit` or `restricted` |
+| `NANOCLAW_JAIL_MEMORY_LIMIT` | `2G` | Memory limit per jail (rctl) |
+| `NANOCLAW_JAIL_MAXPROC` | `100` | Max processes per jail (prevents fork bombs) |
+| `NANOCLAW_JAIL_PCPU` | `80` | CPU percentage limit per jail |
+| `CREDENTIAL_PROXY_PORT` | `3001` | Port for credential proxy |
 
 ### jail-runtime.js Constants
 
@@ -885,10 +892,15 @@ export const JAIL_CONFIG = {
   jailHostIP: '10.99.0.1',
   jailIP: '10.99.0.2',
   jailNetmask: '30',
+  resourceLimits: {
+    memoryuse: process.env.NANOCLAW_JAIL_MEMORY_LIMIT || '2G',
+    maxproc: process.env.NANOCLAW_JAIL_MAXPROC || '100',
+    pcpu: process.env.NANOCLAW_JAIL_PCPU || '80',
+  },
 };
 ```
 
-Update these values in `src/jail-runtime.js` if your paths differ.
+Update these values in `jail-runtime.js` if your paths differ.
 
 ### pf-nanoclaw.conf Customization
 
@@ -930,6 +942,9 @@ jims ALL=(ALL) NOPASSWD: /sbin/umount
 # Network operations (restricted mode only)
 jims ALL=(ALL) NOPASSWD: /sbin/ifconfig
 jims ALL=(ALL) NOPASSWD: /sbin/route
+
+# Resource limits (rctl)
+jims ALL=(ALL) NOPASSWD: /usr/bin/rctl
 
 # Directory operations
 jims ALL=(ALL) NOPASSWD: /bin/mkdir
