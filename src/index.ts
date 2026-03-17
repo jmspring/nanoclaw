@@ -464,8 +464,7 @@ function recoverPendingMessages(): void {
 async function ensureContainerSystemRunning(): Promise<void> {
   ensureContainerRuntimeRunning();
   if (getRuntime() === 'jail') {
-    // @ts-expect-error jail-runtime.js is untyped
-    const jailRuntime = await import('../jail-runtime.js');
+    const jailRuntime = await import('./jail-runtime.js');
     jailRuntime.cleanupOrphans();
   } else {
     cleanupOrphans();
@@ -497,8 +496,7 @@ async function main(): Promise<void> {
     // Clean up jails if using jail runtime
     if (getRuntime() === 'jail') {
       try {
-        // @ts-expect-error jail-runtime.js is untyped
-        const jailRuntime = await import('../jail-runtime.js');
+        const jailRuntime = await import('./jail-runtime.js');
         await jailRuntime.cleanupAllJails();
       } catch (err) {
         logger.warn({ err }, 'Failed to clean up jails during shutdown');
