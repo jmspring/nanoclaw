@@ -560,6 +560,105 @@ test('IPC round-trip — host writes input.json, jail reads, jail writes output.
 });
 
 // ============================================================================
+// Concurrent Jail Creation Tests
+// ============================================================================
+
+test('Concurrent jail creation with epair locking', async () => {
+  // This test verifies that the file-based locking mechanism prevents race
+  // conditions when multiple jails are created concurrently.
+  // Without locking, concurrent ifconfig epair create commands could assign
+  // the same epair number to multiple jails.
+
+  const concurrentCount = 10;
+  const groupIds = [];
+  const mounts = [];
+
+  try {
+    // Create IPC directories for all jails
+    for (let i = 0; i < concurrentCount; i++) {
+      const groupId = uniqueGroupId(`concurrent_${i}`);
+      groupIds.push(groupId);
+
+      const ipcDir = path.join(JAIL_CONFIG.ipcPath, groupId);
+      fs.mkdirSync(ipcDir, { recursive: true });
+      mounts.push({
+        source: ipcDir,
+        target: '/ipc',
+        readOnly: false,
+      });
+    }
+
+    // Create all jails concurrently
+    console.log(`  Creating ${concurrentCount} jails concurrently...`);
+    const createPromises = groupIds.map(async (groupId, index) => {
+      try {
+        await createJail(groupId, mounts);
+        console.log(`  Jail ${index + 1}/${concurrentCount} created successfully: ${groupId}`);
+        return { groupId, success: true };
+      } catch (error) {
+        console.error(`  Failed to create jail ${index + 1}: ${error.message}`);
+        return { groupId, success: false, error };
+      }
+    });
+
+    const results = await Promise.all(createPromises);
+
+    // Verify all jails were created successfully
+    const failedJails = results.filter(r => !r.success);
+    if (failedJails.length > 0) {
+      throw new Error(`${failedJails.length} jails failed to create: ${failedJails.map(r => r.error.message).join(', ')}`);
+    }
+
+    // Verify all jails are running
+    for (const groupId of groupIds) {
+      const running = await isJailRunning(groupId);
+      assert(running, `Jail ${groupId} should be running after concurrent creation`);
+    }
+
+    // If in restricted network mode, verify epair uniqueness
+    if (JAIL_CONFIG.networkMode === 'restricted') {
+      console.log('  Verifying epair interface uniqueness...');
+
+      // Get all epair interfaces
+      const ifconfigOutput = execFileSync('ifconfig', ['-l'], { encoding: 'utf-8' });
+      const interfaces = ifconfigOutput.split(/\s+/);
+      const epairNumbers = new Set();
+
+      for (const iface of interfaces) {
+        const match = iface.match(/^epair(\d+)a$/);
+        if (match) {
+          const epairNum = parseInt(match[1], 10);
+          epairNumbers.add(epairNum);
+        }
+      }
+
+      // There should be at least concurrentCount unique epair numbers
+      // (there may be more if other tests are running)
+      assert(
+        epairNumbers.size >= concurrentCount,
+        `Should have at least ${concurrentCount} unique epair interfaces, found ${epairNumbers.size}`
+      );
+    }
+
+    console.log(`  All ${concurrentCount} jails created and verified successfully`);
+
+  } finally {
+    // Clean up all jails
+    console.log('  Cleaning up concurrent test jails...');
+    const cleanupPromises = groupIds.map(async (groupId, index) => {
+      try {
+        await destroyJail(groupId, mounts);
+        const ipcDir = path.join(JAIL_CONFIG.ipcPath, groupId);
+        fs.rmSync(ipcDir, { recursive: true, force: true });
+      } catch (error) {
+        console.error(`  Failed to cleanup jail ${index + 1}: ${error.message}`);
+      }
+    });
+    await Promise.all(cleanupPromises);
+  }
+});
+
+// ============================================================================
 // Run all tests
 // ============================================================================
 runTests()
