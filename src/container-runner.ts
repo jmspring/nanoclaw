@@ -30,6 +30,7 @@ import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 import type { JailMountPaths } from './jail-runtime.js';
+import { writeRotatingLog } from './log-rotation.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -558,20 +559,16 @@ async function runJailAgent(
       }
 
       if (timedOut) {
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
-        const timeoutLog = path.join(logsDir, `jail-${ts}.log`);
-        fs.writeFileSync(
-          timeoutLog,
-          [
-            `=== Jail Run Log (TIMEOUT) ===`,
-            `Timestamp: ${new Date().toISOString()}`,
-            `Group: ${group.name}`,
-            `Jail: ${jailName}`,
-            `Duration: ${duration}ms`,
-            `Exit Code: ${code}`,
-            `Had Streaming Output: ${hadStreamingOutput}`,
-          ].join('\n'),
-        );
+        const logContent = [
+          `=== Jail Run Log (TIMEOUT) ===`,
+          `Timestamp: ${new Date().toISOString()}`,
+          `Group: ${group.name}`,
+          `Jail: ${jailName}`,
+          `Duration: ${duration}ms`,
+          `Exit Code: ${code}`,
+          `Had Streaming Output: ${hadStreamingOutput}`,
+        ].join('\n');
+        writeRotatingLog(logsDir, 'jail', logContent);
 
         if (hadStreamingOutput) {
           logger.info(
@@ -601,8 +598,6 @@ async function runJailAgent(
         return;
       }
 
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const logFile = path.join(logsDir, `jail-${timestamp}.log`);
       const isVerbose =
         process.env.LOG_LEVEL === 'debug' || process.env.LOG_LEVEL === 'trace';
 
@@ -653,8 +648,8 @@ async function runJailAgent(
         );
       }
 
-      fs.writeFileSync(logFile, logLines.join('\n'));
-      logger.debug({ logFile, verbose: isVerbose }, 'Jail log written');
+      writeRotatingLog(logsDir, 'jail', logLines.join('\n'));
+      logger.debug({ logsDir, verbose: isVerbose }, 'Jail log written');
 
       if (code !== 0) {
         logger.error(
@@ -664,7 +659,7 @@ async function runJailAgent(
             duration,
             stderr,
             stdout,
-            logFile,
+            logsDir,
           },
           'Jail exited with error',
         );
@@ -949,20 +944,16 @@ export async function runContainerAgent(
       const duration = Date.now() - startTime;
 
       if (timedOut) {
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
-        const timeoutLog = path.join(logsDir, `container-${ts}.log`);
-        fs.writeFileSync(
-          timeoutLog,
-          [
-            `=== Container Run Log (TIMEOUT) ===`,
-            `Timestamp: ${new Date().toISOString()}`,
-            `Group: ${group.name}`,
-            `Container: ${containerName}`,
-            `Duration: ${duration}ms`,
-            `Exit Code: ${code}`,
-            `Had Streaming Output: ${hadStreamingOutput}`,
-          ].join('\n'),
-        );
+        const logContent = [
+          `=== Container Run Log (TIMEOUT) ===`,
+          `Timestamp: ${new Date().toISOString()}`,
+          `Group: ${group.name}`,
+          `Container: ${containerName}`,
+          `Duration: ${duration}ms`,
+          `Exit Code: ${code}`,
+          `Had Streaming Output: ${hadStreamingOutput}`,
+        ].join('\n');
+        writeRotatingLog(logsDir, 'container', logContent);
 
         // Timeout after output = idle cleanup, not failure.
         // The agent already sent its response; this is just the
@@ -995,8 +986,6 @@ export async function runContainerAgent(
         return;
       }
 
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const logFile = path.join(logsDir, `container-${timestamp}.log`);
       const isVerbose =
         process.env.LOG_LEVEL === 'debug' || process.env.LOG_LEVEL === 'trace';
 
@@ -1050,8 +1039,8 @@ export async function runContainerAgent(
         );
       }
 
-      fs.writeFileSync(logFile, logLines.join('\n'));
-      logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
+      writeRotatingLog(logsDir, 'container', logLines.join('\n'));
+      logger.debug({ logsDir, verbose: isVerbose }, 'Container log written');
 
       if (code !== 0) {
         logger.error(
@@ -1061,7 +1050,7 @@ export async function runContainerAgent(
             duration,
             stderr,
             stdout,
-            logFile,
+            logsDir,
           },
           'Container exited with error',
         );

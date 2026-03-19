@@ -71,3 +71,16 @@ export const TRIGGER_PATTERN = new RegExp(
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// Log rotation configuration for jail/container logs
+export const LOG_ROTATION_SIZE = process.env.LOG_ROTATION_SIZE || '10M'; // Rotate when file reaches this size
+export const LOG_ROTATION_MAX_FILES = parseInt(
+  process.env.LOG_ROTATION_MAX_FILES || '5',
+  10,
+); // Keep this many rotated files
+export const LOG_ROTATION_COMPRESS =
+  (process.env.LOG_ROTATION_COMPRESS || 'true') === 'true'; // Compress rotated files
+export const LOG_RETENTION_DAYS = parseInt(
+  process.env.LOG_RETENTION_DAYS || '30',
+  10,
+); // Delete logs older than this many days
