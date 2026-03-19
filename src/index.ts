@@ -5,6 +5,8 @@ import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
+  METRICS_ENABLED,
+  METRICS_PORT,
   POLL_INTERVAL,
   TIMEZONE,
   TRIGGER_PATTERN,
@@ -56,6 +58,7 @@ import {
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
+import { startMetricsServer, updateMetrics } from './metrics.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -483,6 +486,29 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
+  // Start metrics server if enabled (jail runtime only)
+  let metricsServer: ReturnType<typeof startMetricsServer> = null;
+  if (getRuntime() === 'jail') {
+    const jailRuntime = await import('./jail-runtime.js');
+    metricsServer = startMetricsServer(
+      { enabled: METRICS_ENABLED, port: METRICS_PORT },
+      jailRuntime.JAIL_CONFIG.templateDataset,
+      jailRuntime.JAIL_CONFIG.templateSnapshot,
+      jailRuntime.JAIL_CONFIG.jailsDataset.split('/')[0], // Extract pool name (e.g., zroot)
+    );
+
+    // Update metrics every 30 seconds
+    if (METRICS_ENABLED) {
+      setInterval(async () => {
+        await updateMetrics(
+          jailRuntime.getActiveJailCount,
+          jailRuntime.getEpairMetrics,
+          jailRuntime.JAIL_CONFIG.jailsDataset.split('/')[0],
+        );
+      }, 30000);
+    }
+  }
+
   // Graceful shutdown handlers
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
@@ -490,6 +516,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
+    if (metricsServer) metricsServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
 

@@ -1004,8 +1004,25 @@ export async function createJail(
       activeCount: activeJails.size,
       maxJails: MAX_CONCURRENT_JAILS,
     });
+
+    // Update metrics on successful creation
+    try {
+      const { incrementJailCreateCounter } = await import('./metrics.js');
+      incrementJailCreateCounter(true);
+    } catch {
+      // Metrics module may not be available in all contexts
+    }
+
     return jailName;
   } catch (error) {
+    // Update metrics on failed creation
+    try {
+      const { incrementJailCreateCounter } = await import('./metrics.js');
+      incrementJailCreateCounter(false);
+    } catch {
+      // Metrics module may not be available in all contexts
+    }
+
     // Cleanup on failure
     const errorMessage = error instanceof Error ? error.message : String(error);
     log(`Jail creation failed, cleaning up`, { jailName, error: errorMessage });

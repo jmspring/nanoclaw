@@ -71,3 +71,11 @@ export const TRIGGER_PATTERN = new RegExp(
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// Metrics and monitoring configuration
+export const METRICS_ENABLED =
+  (process.env.METRICS_ENABLED || 'false') === 'true';
+export const METRICS_PORT = parseInt(
+  process.env.METRICS_PORT || '9090',
+  10,
+);
