@@ -156,6 +156,19 @@ sudo cp -r "$AGENT_RUNNER_SRC/src/"* "$TEMPLATE_PATH/app/src/"
 log "Installing agent-runner dependencies (this may take a moment)..."
 jexec_cmd sh -c 'cd /app && npm install'
 
+# Pre-compile TypeScript in template (nan-fmb6: reduces per-jail overhead)
+log "Pre-compiling TypeScript in template..."
+jexec_cmd sh -c 'cd /app && npm run build'
+
+# Verify compiled output exists
+if [ ! -d "$TEMPLATE_PATH/app/dist" ]; then
+    error "TypeScript compilation failed - /app/dist not found"
+fi
+if [ ! -f "$TEMPLATE_PATH/app/dist/index.js" ]; then
+    error "TypeScript compilation failed - /app/dist/index.js not found"
+fi
+log "  TypeScript pre-compiled successfully"
+
 # Create workspace directories (matching Docker)
 log "Creating workspace directories..."
 jexec_cmd mkdir -p /workspace/group /workspace/global /workspace/extra
@@ -176,11 +189,20 @@ cat << 'EOF' | sudo tee "$TEMPLATE_PATH/app/entrypoint.sh" > /dev/null
 #!/bin/sh
 set -e
 cd /app
-npx tsc --outDir /tmp/dist 2>&1 >&2
-ln -sf /app/node_modules /tmp/dist/node_modules
-chmod -R a-w /tmp/dist
-cat > /tmp/input.json
-exec node /tmp/dist/index.js < /tmp/input.json
+
+# Skip TypeScript compilation if already pre-compiled in template (nan-fmb6)
+if [ -d /app/dist ] && [ -f /app/dist/index.js ]; then
+  # Use pre-compiled TypeScript from template
+  cat > /tmp/input.json
+  exec node /app/dist/index.js < /tmp/input.json
+else
+  # Fallback: compile TypeScript at runtime (legacy behavior)
+  npx tsc --outDir /tmp/dist 2>&1 >&2
+  ln -sf /app/node_modules /tmp/dist/node_modules
+  chmod -R a-w /tmp/dist
+  cat > /tmp/input.json
+  exec node /tmp/dist/index.js < /tmp/input.json
+fi
 EOF
 sudo chmod +x "$TEMPLATE_PATH/app/entrypoint.sh"
 

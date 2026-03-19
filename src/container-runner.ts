@@ -29,6 +29,7 @@ import {
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
+import type { JailMountPaths } from './jail-runtime.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -55,18 +56,6 @@ interface VolumeMount {
   hostPath: string;
   containerPath: string;
   readonly: boolean;
-}
-
-/**
- * Semantic mount paths for FreeBSD jails.
- * No Docker translation - jail-runtime.js defines the internal layout.
- */
-interface JailMountPaths {
-  projectPath: string | null; // NanoClaw source (main only)
-  groupPath: string; // Group's folder
-  ipcPath: string; // Group's IPC directory
-  claudeSessionPath: string; // Claude session data
-  agentRunnerPath: string; // Agent runner source
 }
 
 /**
@@ -375,8 +364,7 @@ async function runJailAgent(
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
-  // @ts-expect-error jail-runtime.js is untyped
-  const jailRuntime = await import('../jail-runtime.js');
+  const jailRuntime = await import('./jail-runtime.js');
 
   // Build semantic mount paths (not Docker VolumeMount[])
   const mountPaths = buildJailMountPaths(group, input.isMain);
@@ -460,8 +448,8 @@ async function runJailAgent(
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    proc.stdin.write(JSON.stringify(input));
-    proc.stdin.end();
+    proc.stdin?.write(JSON.stringify(input));
+    proc.stdin?.end();
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';
@@ -491,7 +479,7 @@ async function runJailAgent(
       timeout = setTimeout(killJail, timeoutMs);
     };
 
-    proc.stdout.on('data', (data: Buffer) => {
+    proc.stdout?.on('data', (data: Buffer) => {
       const chunk = data.toString();
 
       if (!stdoutTruncated) {
@@ -538,7 +526,7 @@ async function runJailAgent(
       }
     });
 
-    proc.stderr.on('data', (data: Buffer) => {
+    proc.stderr?.on('data', (data: Buffer) => {
       const chunk = data.toString();
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
