@@ -135,6 +135,15 @@ const EPAIR_WARNING_THRESHOLD = 0.8;
 /** Track assigned epair numbers for cleanup */
 const assignedEpairs = new Map<string, number>(); // groupId -> epair number (e.g., 0 for epair0a/epair0b)
 
+/** Maximum concurrent jails (configurable via env var) */
+const MAX_CONCURRENT_JAILS = parseInt(
+  process.env.NANOCLAW_MAX_JAILS || '50',
+  10,
+);
+
+/** Track active jails */
+const activeJails = new Set<string>();
+
 /** Path to persistent epair state file */
 const EPAIR_STATE_FILE = '/tmp/nanoclaw-epair-state.json';
 
@@ -879,6 +888,14 @@ export async function createJail(
   const fstabPath = getFstabPath(jailName);
   const snapshot = `${JAIL_CONFIG.templateDataset}@${JAIL_CONFIG.templateSnapshot}`;
 
+  // Check if at capacity (only enforce for new jails, not re-creation after cleanup)
+  if (!activeJails.has(groupId) && activeJails.size >= MAX_CONCURRENT_JAILS) {
+    throw new Error(
+      `Cannot create jail: maximum concurrent jail limit reached (${MAX_CONCURRENT_JAILS}). ` +
+        `Currently active: ${activeJails.size}. Configure NANOCLAW_MAX_JAILS to adjust limit.`,
+    );
+  }
+
   log(`Creating jail`, { jailName, groupId });
 
   // Check if jail already exists
@@ -979,7 +996,14 @@ export async function createJail(
       await configureJailNetwork(jailName, epairInfo);
     }
 
-    log(`Jail created successfully`, { jailName });
+    // Track active jail
+    activeJails.add(groupId);
+
+    log(`Jail created successfully`, {
+      jailName,
+      activeCount: activeJails.size,
+      maxJails: MAX_CONCURRENT_JAILS,
+    });
     return jailName;
   } catch (error) {
     // Cleanup on failure
@@ -1554,6 +1578,13 @@ export async function cleanupJail(
       log(`Jail cleanup completed successfully`, { jailName });
       logCleanupAudit('CLEANUP_END', jailName, 'SUCCESS');
     }
+
+    // Remove from active jails tracking
+    activeJails.delete(groupId);
+    log(`Removed jail from active tracking`, {
+      jailName,
+      activeCount: activeJails.size,
+    });
   }
 }
 
@@ -1568,6 +1599,30 @@ export async function destroyJail(
 ): Promise<void> {
   // cleanupJail handles stopping if needed, unmounting, and ZFS cleanup
   await cleanupJail(groupId, mounts);
+}
+
+/**
+ * Get the current number of active jails.
+ * @returns Current active jail count
+ */
+export function getActiveJailCount(): number {
+  return activeJails.size;
+}
+
+/**
+ * Get the current jail capacity status.
+ * @returns Object with current count and max limit
+ */
+export function getJailCapacity(): { current: number; max: number } {
+  return { current: activeJails.size, max: MAX_CONCURRENT_JAILS };
+}
+
+/**
+ * Check if the jail system is at capacity.
+ * @returns True if at or above the maximum concurrent jail limit
+ */
+export function isAtJailCapacity(): boolean {
+  return activeJails.size >= MAX_CONCURRENT_JAILS;
 }
 
 /** Ensure the jail subsystem is available. */
