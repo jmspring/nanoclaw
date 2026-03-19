@@ -126,6 +126,12 @@ export const JAIL_CONFIG: JailConfig = {
   },
 };
 
+/** Maximum number of epairs allowed (configurable via env var) */
+const MAX_EPAIRS = parseInt(process.env.NANOCLAW_MAX_EPAIRS || '200', 10);
+
+/** Epair warning threshold (percentage) */
+const EPAIR_WARNING_THRESHOLD = 0.8;
+
 /** Track assigned epair numbers for cleanup */
 const assignedEpairs = new Map<string, number>(); // groupId -> epair number (e.g., 0 for epair0a/epair0b)
 
@@ -437,6 +443,21 @@ async function createEpair(groupId: string): Promise<EpairInfo> {
   const unlock = await acquireEpairLock();
 
   try {
+    // Check epair pool capacity before creating
+    const currentCount = assignedEpairs.size;
+
+    if (currentCount >= MAX_EPAIRS) {
+      throw new Error(`Epair pool exhausted (${currentCount}/${MAX_EPAIRS}). Wait for jails to complete.`);
+    }
+
+    if (currentCount >= MAX_EPAIRS * EPAIR_WARNING_THRESHOLD) {
+      log(`WARNING: Approaching epair pool limit`, {
+        current: currentCount,
+        max: MAX_EPAIRS,
+        threshold: Math.floor(MAX_EPAIRS * EPAIR_WARNING_THRESHOLD)
+      });
+    }
+
     // Create epair - FreeBSD returns the name (e.g., "epair0")
     const result = await sudoExec(['ifconfig', 'epair', 'create']);
     const epairName = result.stdout.trim(); // e.g., "epair0a"
@@ -1925,4 +1946,16 @@ export async function cleanupAllJails(): Promise<void> {
   }
 
   log(`Finished cleaning up all NanoClaw jails`);
+}
+
+/**
+ * Get epair pool metrics for monitoring.
+ * @returns Epair allocation metrics
+ */
+export function getEpairMetrics(): { current: number; max: number; warningThreshold: number } {
+  return {
+    current: assignedEpairs.size,
+    max: MAX_EPAIRS,
+    warningThreshold: EPAIR_WARNING_THRESHOLD,
+  };
 }
