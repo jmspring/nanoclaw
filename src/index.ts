@@ -4,6 +4,7 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
+  GROUPS_DIR,
   IDLE_TIMEOUT,
   METRICS_ENABLED,
   METRICS_PORT,
@@ -59,6 +60,10 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { startMetricsServer, updateMetrics } from './metrics.js';
+import {
+  cleanupAllGroupLogs,
+  closeAllLogStreams,
+} from './log-rotation.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -530,6 +535,13 @@ async function main(): Promise<void> {
       }
     }
 
+    // Close all rotating log streams
+    try {
+      await closeAllLogStreams();
+    } catch (err) {
+      logger.warn({ err }, 'Failed to close log streams during shutdown');
+    }
+
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -629,6 +641,26 @@ async function main(): Promise<void> {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
     process.exit(1);
   });
+
+  // Periodic log cleanup (runs daily)
+  const logCleanupInterval = setInterval(
+    () => {
+      cleanupAllGroupLogs(GROUPS_DIR).catch((err) => {
+        logger.warn({ err }, 'Periodic log cleanup failed');
+      });
+    },
+    24 * 60 * 60 * 1000,
+  ); // 24 hours
+  // Clean up on shutdown
+  const originalShutdown = shutdown;
+  const shutdownWithCleanup = async (signal: string) => {
+    clearInterval(logCleanupInterval);
+    await originalShutdown(signal);
+  };
+  process.removeListener('SIGTERM', shutdown);
+  process.removeListener('SIGINT', shutdown);
+  process.on('SIGTERM', () => shutdownWithCleanup('SIGTERM'));
+  process.on('SIGINT', () => shutdownWithCleanup('SIGINT'));
 }
 
 // Guard: only run when executed directly, not when imported by tests
