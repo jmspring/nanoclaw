@@ -60,10 +60,7 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { startMetricsServer, updateMetrics } from './metrics.js';
-import {
-  cleanupAllGroupLogs,
-  closeAllLogStreams,
-} from './log-rotation.js';
+import { cleanupAllGroupLogs, closeAllLogStreams } from './log-rotation.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';

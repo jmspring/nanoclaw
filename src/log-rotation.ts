@@ -54,7 +54,7 @@ export function getRotatingLogStream(
       interval: '1d', // Also rotate daily to prevent huge files
     });
 
-    stream.on('error', (err) => {
+    stream.on('error', (err: unknown) => {
       logger.error({ logsDir, prefix, err }, 'Log stream error');
     });
 
@@ -85,7 +85,7 @@ export function writeRotatingLog(
   // Add separator between entries for readability
   const entry = `\n${'='.repeat(80)}\n${content}\n`;
 
-  stream.write(entry, (err) => {
+  stream.write(entry, (err: unknown) => {
     if (err) {
       logger.error({ logsDir, prefix, err }, 'Failed to write log entry');
     }

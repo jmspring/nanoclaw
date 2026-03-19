@@ -174,7 +174,11 @@ function getHealthStatus(
  */
 export async function updateMetrics(
   getActiveJailCount: () => number,
-  getEpairMetrics: () => { current: number; max: number; warningThreshold: number },
+  getEpairMetrics: () => {
+    current: number;
+    max: number;
+    warningThreshold: number;
+  },
   poolName: string,
 ): Promise<void> {
   try {
@@ -217,9 +221,7 @@ function formatPrometheusMetrics(): string {
     '# HELP nanoclaw_zfs_pool_bytes_avail ZFS pool available space in bytes',
   );
   lines.push('# TYPE nanoclaw_zfs_pool_bytes_avail gauge');
-  lines.push(
-    `nanoclaw_zfs_pool_bytes_avail ${metricsData.zfsPoolBytesAvail}`,
-  );
+  lines.push(`nanoclaw_zfs_pool_bytes_avail ${metricsData.zfsPoolBytesAvail}`);
   lines.push('');
 
   return lines.join('\n');

@@ -252,10 +252,7 @@ async function applyRctlLimits(jailName: string): Promise<void> {
       '-a',
       `jail:${jailName}:memoryuse:deny=${limits.memoryuse}`,
     ]);
-    logger.info(
-      { jailName, limit: limits.memoryuse },
-      'Applied memory limit',
-    );
+    logger.info({ jailName, limit: limits.memoryuse }, 'Applied memory limit');
 
     // Add process limit (prevents fork bombs)
     await sudoExec([
@@ -263,19 +260,13 @@ async function applyRctlLimits(jailName: string): Promise<void> {
       '-a',
       `jail:${jailName}:maxproc:deny=${limits.maxproc}`,
     ]);
-    logger.info(
-      { jailName, limit: limits.maxproc },
-      'Applied process limit',
-    );
+    logger.info({ jailName, limit: limits.maxproc }, 'Applied process limit');
 
     // Add CPU limit
     await sudoExec(['rctl', '-a', `jail:${jailName}:pcpu:deny=${limits.pcpu}`]);
     logger.info({ jailName, limit: limits.pcpu }, 'Applied CPU limit');
   } catch (error) {
-    logger.warn(
-      { jailName, err: error },
-      'Could not apply rctl limits',
-    );
+    logger.warn({ jailName, err: error }, 'Could not apply rctl limits');
     // Don't fail jail creation if rctl is not available - just warn
   }
 }
@@ -343,7 +334,10 @@ function persistEpairState(): void {
     const state = Object.fromEntries(assignedEpairs);
     fs.writeFileSync(EPAIR_STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
   } catch (error) {
-    logger.warn({ err: error, file: EPAIR_STATE_FILE }, 'Failed to persist epair state');
+    logger.warn(
+      { err: error, file: EPAIR_STATE_FILE },
+      'Failed to persist epair state',
+    );
   }
 }
 
@@ -462,7 +456,9 @@ async function createEpair(groupId: string): Promise<EpairInfo> {
     const currentCount = assignedEpairs.size;
 
     if (currentCount >= MAX_EPAIRS) {
-      throw new Error(`Epair pool exhausted (${currentCount}/${MAX_EPAIRS}). Wait for jails to complete.`);
+      throw new Error(
+        `Epair pool exhausted (${currentCount}/${MAX_EPAIRS}). Wait for jails to complete.`,
+      );
     }
 
     if (currentCount >= MAX_EPAIRS * EPAIR_WARNING_THRESHOLD) {
@@ -608,7 +604,10 @@ async function setupJailResolv(jailPath: string): Promise<void> {
     ]);
     logger.debug({ jailPath, resolvPath }, 'Copied host resolv.conf to jail');
   } catch (error) {
-    logger.warn({ jailPath, resolvPath, err: error }, 'Could not create jail resolv.conf');
+    logger.warn(
+      { jailPath, resolvPath, err: error },
+      'Could not create jail resolv.conf',
+    );
   }
 }
 
@@ -919,7 +918,10 @@ export async function createJail(
     try {
       await sudoExec(['zfs', 'destroy', '-r', dataset]);
     } catch (error) {
-      logger.warn({ dataset, err: error }, 'Could not destroy existing dataset');
+      logger.warn(
+        { dataset, err: error },
+        'Could not destroy existing dataset',
+      );
     }
   }
 
@@ -956,10 +958,7 @@ export async function createJail(
     if (JAIL_CONFIG.networkMode === 'restricted') {
       // Create epair interface pair
       epairInfo = await createEpair(groupId);
-      logger.info(
-        { groupId, ...epairInfo },
-        'Created epair for jail',
-      );
+      logger.info({ groupId, ...epairInfo }, 'Created epair for jail');
 
       // Setup resolv.conf for DNS
       await setupJailResolv(jailPath);
@@ -1037,7 +1036,10 @@ export async function createJail(
     }
 
     // Cleanup on failure
-    logger.error({ jailName, groupId, err: error }, 'Jail creation failed, cleaning up');
+    logger.error(
+      { jailName, groupId, err: error },
+      'Jail creation failed, cleaning up',
+    );
     await cleanupJail(groupId, mounts);
     throw error;
   }
@@ -1472,7 +1474,10 @@ export async function cleanupJail(
         );
         logCleanupAudit('RELEASE_EPAIR', jailName, 'SUCCESS');
       } catch (error) {
-        logger.warn({ jailName, groupId, err: error }, 'Could not release epair');
+        logger.warn(
+          { jailName, groupId, err: error },
+          'Could not release epair',
+        );
         logCleanupAudit('RELEASE_EPAIR', jailName, 'FAILED', error);
         errors.push(error as Error);
       }
@@ -1529,7 +1534,10 @@ export async function cleanupJail(
         logger.info({ dataset, jailName }, 'Destroyed dataset');
         logCleanupAudit('DESTROY_DATASET', jailName, 'SUCCESS');
       } catch (error) {
-        logger.warn({ dataset, jailName, groupId, err: error }, 'Could not destroy dataset');
+        logger.warn(
+          { dataset, jailName, groupId, err: error },
+          'Could not destroy dataset',
+        );
         logCleanupAudit('DESTROY_DATASET', jailName, 'FAILED', error);
         errors.push(error as Error);
       }
@@ -1542,7 +1550,10 @@ export async function cleanupJail(
         logger.debug({ fstabPath, jailName }, 'Removed fstab');
         logCleanupAudit('REMOVE_FSTAB', jailName, 'SUCCESS');
       } catch (error) {
-        logger.warn({ fstabPath, jailName, groupId, err: error }, 'Could not remove fstab');
+        logger.warn(
+          { fstabPath, jailName, groupId, err: error },
+          'Could not remove fstab',
+        );
         logCleanupAudit('REMOVE_FSTAB', jailName, 'FAILED', error);
         errors.push(error as Error);
       }
@@ -1715,7 +1726,10 @@ export function cleanupOrphans(): void {
         logger.info({ jailName }, 'Stopped orphaned jail');
       } catch {
         // Already stopped or failed - try cleanup anyway
-        logger.warn({ jailName }, 'Could not stop orphaned jail, attempting cleanup');
+        logger.warn(
+          { jailName },
+          'Could not stop orphaned jail, attempting cleanup',
+        );
       }
 
       // Unmount any nullfs mounts for this jail before destroying dataset
@@ -1806,7 +1820,10 @@ export function cleanupOrphans(): void {
                 });
                 logger.info({ epairNum, iface }, 'Destroyed orphan epair');
               } catch {
-                logger.warn({ epairNum, iface }, 'Could not destroy orphan epair');
+                logger.warn(
+                  { epairNum, iface },
+                  'Could not destroy orphan epair',
+                );
               }
             }
           }
@@ -1856,7 +1873,10 @@ export async function cleanupAllJails(): Promise<void> {
     return;
   }
 
-  logger.info({ count: jailNames.length, names: jailNames }, 'Found jails to clean up');
+  logger.info(
+    { count: jailNames.length, names: jailNames },
+    'Found jails to clean up',
+  );
 
   for (const jailName of jailNames) {
     const jailPath = getJailPath(jailName);
@@ -1914,7 +1934,10 @@ export async function cleanupAllJails(): Promise<void> {
           await sudoExec(['umount', '-f', mountPoint], { timeout: 5000 });
           logger.debug({ mountPoint }, 'Unmounted nullfs');
         } catch (err) {
-          logger.warn({ mountPoint, err }, 'Failed to unmount nullfs, continuing');
+          logger.warn(
+            { mountPoint, err },
+            'Failed to unmount nullfs, continuing',
+          );
         }
       }
     } catch (err) {
@@ -1927,7 +1950,10 @@ export async function cleanupAllJails(): Promise<void> {
         await sudoExec(['zfs', 'destroy', '-r', dataset], { timeout: 30000 });
         logger.info({ dataset }, 'Destroyed ZFS dataset');
       } catch (err) {
-        logger.warn({ dataset, err }, 'Failed to destroy ZFS dataset, continuing');
+        logger.warn(
+          { dataset, err },
+          'Failed to destroy ZFS dataset, continuing',
+        );
       }
     }
 
@@ -1937,7 +1963,10 @@ export async function cleanupAllJails(): Promise<void> {
         fs.unlinkSync(fstabPath);
         logger.debug({ fstabPath }, 'Removed fstab file');
       } catch (err) {
-        logger.warn({ fstabPath, err }, 'Failed to remove fstab file, continuing');
+        logger.warn(
+          { fstabPath, err },
+          'Failed to remove fstab file, continuing',
+        );
       }
     }
 
@@ -1981,7 +2010,11 @@ export async function cleanupAllJails(): Promise<void> {
  * Get epair pool metrics for monitoring.
  * @returns Epair allocation metrics
  */
-export function getEpairMetrics(): { current: number; max: number; warningThreshold: number } {
+export function getEpairMetrics(): {
+  current: number;
+  max: number;
+  warningThreshold: number;
+} {
   return {
     current: assignedEpairs.size,
     max: MAX_EPAIRS,

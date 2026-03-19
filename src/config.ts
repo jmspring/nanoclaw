@@ -75,10 +75,7 @@ export const TIMEZONE =
 // Metrics and monitoring configuration
 export const METRICS_ENABLED =
   (process.env.METRICS_ENABLED || 'false') === 'true';
-export const METRICS_PORT = parseInt(
-  process.env.METRICS_PORT || '9090',
-  10,
-);
+export const METRICS_PORT = parseInt(process.env.METRICS_PORT || '9090', 10);
 
 // Log rotation configuration for jail/container logs
 export const LOG_ROTATION_SIZE = process.env.LOG_ROTATION_SIZE || '10M'; // Rotate when file reaches this size
