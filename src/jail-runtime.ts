@@ -57,6 +57,9 @@ export interface EpairInfo {
   epairNum: number;
   hostIface: string;
   jailIface: string;
+  hostIP: string;
+  jailIP: string;
+  netmask: string;
 }
 
 /** Resource limits configuration */
@@ -105,9 +108,11 @@ export const JAIL_CONFIG: JailConfig = {
   // Network mode: "inherit" (ip4=inherit) or "restricted" (vnet with epair and pf)
   networkMode: (process.env.NANOCLAW_JAIL_NETWORK_MODE as 'inherit' | 'restricted') || 'inherit',
   // Jail network configuration (used when networkMode === 'restricted')
-  // Each jail gets its own /30 subnet via epair:
-  //   - Host side (epairNa): 10.99.0.1/30 (gateway)
-  //   - Jail side (epairNb): 10.99.0.2/30
+  // Each jail gets its own /30 subnet via epair from pool 10.99.0.0/24:
+  //   - Jail N uses subnet 10.99.N.0/30 (where N = epair number)
+  //   - Host side (epairNa): 10.99.N.1/30 (gateway)
+  //   - Jail side (epairNb): 10.99.N.2/30
+  // NOTE: These are legacy defaults - actual IPs are calculated per-jail in createEpair()
   jailHostIP: '10.99.0.1',
   jailIP: '10.99.0.2',
   jailNetmask: '30',
@@ -135,34 +140,41 @@ function log(message: string, data: Record<string, unknown> = {}): void {
 /** Cleanup audit logging */
 const CLEANUP_AUDIT_LOG = path.join(JAIL_CONFIG.jailsPath, 'cleanup-audit.log');
 
-function logCleanupAudit(action, jailName, status, error = null) {
+function logCleanupAudit(action: string, jailName: string, status: string, error: unknown = null): void {
   const timestamp = new Date().toISOString();
+  const errorMessage = error instanceof Error ? error.message : null;
   const entry = {
     timestamp,
     action,
     jailName,
     status,
-    error: error ? error.message : null,
+    error: errorMessage,
   };
-  const logLine = `${timestamp} [${status}] ${action} ${jailName}${error ? ` - ${error.message}` : ''}\n`;
+  const logLine = `${timestamp} [${status}] ${action} ${jailName}${errorMessage ? ` - ${errorMessage}` : ''}\n`;
 
   try {
     fs.appendFileSync(CLEANUP_AUDIT_LOG, logLine);
   } catch (err) {
-    console.error(`Failed to write cleanup audit log: ${err.message}`);
+    const errMessage = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to write cleanup audit log: ${errMessage}`);
   }
 }
 
 /**
  * Retry a function with exponential backoff.
- * @param {Function} fn - Async function to retry
- * @param {number} maxRetries - Maximum number of retries (default: 3)
- * @param {number} initialDelay - Initial delay in ms (default: 100)
- * @param {number} maxDelay - Maximum delay in ms (default: 5000)
- * @returns {Promise<any>} - Result of the function
+ * @param fn - Async function to retry
+ * @param maxRetries - Maximum number of retries (default: 3)
+ * @param initialDelay - Initial delay in ms (default: 100)
+ * @param maxDelay - Maximum delay in ms (default: 5000)
+ * @returns Result of the function
  */
-async function retryWithBackoff(fn, maxRetries = 3, initialDelay = 100, maxDelay = 5000) {
-  let lastError;
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  initialDelay = 100,
+  maxDelay = 5000
+): Promise<T> {
+  let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
@@ -170,7 +182,8 @@ async function retryWithBackoff(fn, maxRetries = 3, initialDelay = 100, maxDelay
       lastError = error;
       if (attempt < maxRetries) {
         const delay = Math.min(initialDelay * Math.pow(2, attempt), maxDelay);
-        log(`Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, { error: error.message });
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        log(`Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, { error: errorMessage });
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -272,12 +285,13 @@ function sudoExecSync(args: string[], options: SudoExecOptions = {}): string {
  * Persist epair state to disk for crash recovery.
  * Must be called while holding the epair lock.
  */
-function persistEpairState() {
+function persistEpairState(): void {
   try {
     const state = Object.fromEntries(assignedEpairs);
     fs.writeFileSync(EPAIR_STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
   } catch (error) {
-    log(`Warning: failed to persist epair state: ${error.message}`);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    log(`Warning: failed to persist epair state: ${errorMessage}`);
   }
 }
 
@@ -285,18 +299,19 @@ function persistEpairState() {
  * Restore epair state from disk and sync with actual system state.
  * Call this on startup to recover from crashes.
  */
-function restoreEpairState() {
+function restoreEpairState(): void {
   // First, load persisted state if it exists
   if (fs.existsSync(EPAIR_STATE_FILE)) {
     try {
       const data = fs.readFileSync(EPAIR_STATE_FILE, 'utf-8');
-      const state = JSON.parse(data);
+      const state = JSON.parse(data) as Record<string, number>;
       for (const [groupId, epairNum] of Object.entries(state)) {
         assignedEpairs.set(groupId, epairNum);
       }
       log(`Restored epair state from disk`, { count: assignedEpairs.size });
     } catch (error) {
-      log(`Warning: failed to restore epair state: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log(`Warning: failed to restore epair state: ${errorMessage}`);
     }
   }
 
@@ -307,7 +322,7 @@ function restoreEpairState() {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const interfaces = ifconfigOutput.trim().split(/\s+/);
-    const existingEpairs = new Set();
+    const existingEpairs = new Set<number>();
     const epairRegex = /^epair(\d+)a$/;
 
     for (const iface of interfaces) {
@@ -330,16 +345,17 @@ function restoreEpairState() {
 
     log(`Synced epair state with system`, { tracked: assignedEpairs.size, existing: existingEpairs.size });
   } catch (error) {
-    log(`Warning: failed to sync epair state with system: ${error.message}`);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    log(`Warning: failed to sync epair state with system: ${errorMessage}`);
   }
 }
 
 /**
  * Acquire an exclusive lock for epair creation.
  * Uses directory creation as an atomic lock mechanism (POSIX mkdir is atomic).
- * @returns {Promise<Function>} - Unlock function to release the lock
+ * @returns Unlock function to release the lock
  */
-async function acquireEpairLock() {
+async function acquireEpairLock(): Promise<() => void> {
   const lockDir = '/tmp/nanoclaw-epair.lock';
   const maxRetries = 100;
   const retryDelay = 50; // milliseconds
@@ -354,11 +370,13 @@ async function acquireEpairLock() {
         try {
           fs.rmdirSync(lockDir);
         } catch (err) {
-          log(`Warning: failed to release epair lock: ${err.message}`);
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          log(`Warning: failed to release epair lock: ${errorMessage}`);
         }
       };
     } catch (err) {
-      if (err.code !== 'EEXIST') {
+      const nodeError = err as NodeJS.ErrnoException;
+      if (nodeError.code !== 'EEXIST') {
         throw err;
       }
       // Lock is held by another process - wait and retry
@@ -390,18 +408,31 @@ async function createEpair(groupId: string): Promise<EpairInfo> {
     }
     const epairNum = parseInt(match[1], 10);
 
+    // Validate epair number fits in /24 pool (0-255)
+    if (epairNum < 0 || epairNum > 255) {
+      throw new Error(`Epair number ${epairNum} exceeds /24 pool capacity (0-255)`);
+    }
+
     const hostIface = `epair${epairNum}a`;
     const jailIface = `epair${epairNum}b`;
 
+    // Allocate unique /30 subnet for this jail from 10.99.0.0/24 pool
+    // Jail N uses subnet 10.99.N.0/30:
+    //   - Host IP: 10.99.N.1
+    //   - Jail IP: 10.99.N.2
+    const hostIP = `10.99.${epairNum}.1`;
+    const jailIP = `10.99.${epairNum}.2`;
+    const netmask = '30';
+
     // Configure host side with gateway IP
-    await sudoExec(['ifconfig', hostIface, `${JAIL_CONFIG.jailHostIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
+    await sudoExec(['ifconfig', hostIface, `${hostIP}/${netmask}`, 'up']);
 
     // Track epair for cleanup and persist state
     assignedEpairs.set(groupId, epairNum);
     persistEpairState();
 
-    log(`Created epair`, { groupId, epairNum, hostIface, jailIface });
-    return { epairNum, hostIface, jailIface };
+    log(`Created epair`, { groupId, epairNum, hostIface, jailIface, hostIP, jailIP });
+    return { epairNum, hostIface, jailIface, hostIP, jailIP, netmask };
   } finally {
     // Always release lock, even on error
     unlock();
@@ -411,16 +442,16 @@ async function createEpair(groupId: string): Promise<EpairInfo> {
 /**
  * Configure networking inside a vnet jail after it starts.
  * @param jailName - The jail name
- * @param jailIface - The jail-side interface name (e.g., "epair0b")
+ * @param epairInfo - Epair interface and IP information
  */
-async function configureJailNetwork(jailName: string, jailIface: string): Promise<void> {
-  // Configure the jail's interface
-  await sudoExec(['jexec', jailName, 'ifconfig', jailIface, `${JAIL_CONFIG.jailIP}/${JAIL_CONFIG.jailNetmask}`, 'up']);
+async function configureJailNetwork(jailName: string, epairInfo: EpairInfo): Promise<void> {
+  // Configure the jail's interface with its unique IP
+  await sudoExec(['jexec', jailName, 'ifconfig', epairInfo.jailIface, `${epairInfo.jailIP}/${epairInfo.netmask}`, 'up']);
 
-  // Add default route via the host
-  await sudoExec(['jexec', jailName, 'route', 'add', 'default', JAIL_CONFIG.jailHostIP]);
+  // Add default route via the host gateway
+  await sudoExec(['jexec', jailName, 'route', 'add', 'default', epairInfo.hostIP]);
 
-  log(`Configured jail network`, { jailName, jailIface, ip: JAIL_CONFIG.jailIP, gateway: JAIL_CONFIG.jailHostIP });
+  log(`Configured jail network`, { jailName, jailIface: epairInfo.jailIface, ip: epairInfo.jailIP, gateway: epairInfo.hostIP });
 }
 
 /**
@@ -816,7 +847,7 @@ export async function createJail(groupId: string, mounts: JailMount[] = []): Pro
 
     // Configure networking inside the vnet jail
     if (JAIL_CONFIG.networkMode === 'restricted' && epairInfo) {
-      await configureJailNetwork(jailName, epairInfo.jailIface);
+      await configureJailNetwork(jailName, epairInfo);
     }
 
     log(`Jail created successfully`, { jailName });
@@ -1045,13 +1076,19 @@ export async function stopJail(groupId: string): Promise<void> {
 /**
  * Force cleanup of a jail using aggressive methods when normal cleanup fails.
  * This kills all processes, force unmounts, and force destroys datasets.
- * @param {string} jailName - The jail name
- * @param {Array<{hostPath: string, jailPath: string, readonly: boolean}>} mounts - Mount specifications
- * @param {string} dataset - The ZFS dataset path
- * @param {string} jailPath - The jail filesystem path
- * @param {string|null} epairNum - The epair number if in restricted network mode
+ * @param jailName - The jail name
+ * @param mounts - Mount specifications
+ * @param dataset - The ZFS dataset path
+ * @param jailPath - The jail filesystem path
+ * @param epairNum - The epair number if in restricted network mode
  */
-async function forceCleanup(jailName, mounts, dataset, jailPath, epairNum = null) {
+async function forceCleanup(
+  jailName: string,
+  mounts: JailMount[],
+  dataset: string,
+  jailPath: string,
+  epairNum: number | null = null
+): Promise<void> {
   log(`Starting force cleanup`, { jailName });
   logCleanupAudit('FORCE_CLEANUP_START', jailName, 'INFO');
 
@@ -1064,9 +1101,10 @@ async function forceCleanup(jailName, mounts, dataset, jailPath, epairNum = null
       log(`Killed all processes in jail`, { jailName });
       logCleanupAudit('KILL_PROCESSES', jailName, 'SUCCESS');
     } catch (error) {
-      log(`Could not kill processes in jail: ${error.message}`, { jailName });
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log(`Could not kill processes in jail: ${errorMessage}`, { jailName });
       logCleanupAudit('KILL_PROCESSES', jailName, 'FAILED', error);
-      errors.push(new Error(`Failed to kill processes: ${error.message}`));
+      errors.push(new Error(`Failed to kill processes: ${errorMessage}`));
     }
 
     // 2. Force stop jail
@@ -1075,9 +1113,10 @@ async function forceCleanup(jailName, mounts, dataset, jailPath, epairNum = null
       log(`Force stopped jail`, { jailName });
       logCleanupAudit('FORCE_STOP_JAIL', jailName, 'SUCCESS');
     } catch (error) {
-      log(`Could not force stop jail: ${error.message}`, { jailName });
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log(`Could not force stop jail: ${errorMessage}`, { jailName });
       logCleanupAudit('FORCE_STOP_JAIL', jailName, 'FAILED', error);
-      errors.push(new Error(`Failed to force stop jail: ${error.message}`));
+      errors.push(new Error(`Failed to force stop jail: ${errorMessage}`));
     }
   }
 
@@ -1088,7 +1127,8 @@ async function forceCleanup(jailName, mounts, dataset, jailPath, epairNum = null
     logCleanupAudit('FORCE_UNMOUNT_DEVFS', jailName, 'SUCCESS');
   } catch (error) {
     // Expected to fail if not mounted
-    log(`Could not force unmount devfs (may not be mounted): ${error.message}`, { jailName });
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    log(`Could not force unmount devfs (may not be mounted): ${errorMessage}`, { jailName });
   }
 
   // 4. Force unmount all nullfs mounts
@@ -1100,9 +1140,10 @@ async function forceCleanup(jailName, mounts, dataset, jailPath, epairNum = null
       log(`Force unmounted ${targetPath}`);
       logCleanupAudit('FORCE_UNMOUNT_NULLFS', jailName, 'SUCCESS', null);
     } catch (error) {
-      log(`Could not force unmount ${targetPath}: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log(`Could not force unmount ${targetPath}: ${errorMessage}`);
       logCleanupAudit('FORCE_UNMOUNT_NULLFS', jailName, 'FAILED', error);
-      errors.push(new Error(`Failed to force unmount ${targetPath}: ${error.message}`));
+      errors.push(new Error(`Failed to force unmount ${targetPath}: ${errorMessage}`));
     }
   }
 
@@ -1113,9 +1154,10 @@ async function forceCleanup(jailName, mounts, dataset, jailPath, epairNum = null
       log(`Force destroyed dataset`, { dataset });
       logCleanupAudit('FORCE_DESTROY_DATASET', jailName, 'SUCCESS');
     } catch (error) {
-      log(`Could not force destroy dataset: ${error.message}`, { dataset });
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log(`Could not force destroy dataset: ${errorMessage}`, { dataset });
       logCleanupAudit('FORCE_DESTROY_DATASET', jailName, 'FAILED', error);
-      errors.push(new Error(`Failed to force destroy dataset: ${error.message}`));
+      errors.push(new Error(`Failed to force destroy dataset: ${errorMessage}`));
     }
   }
 
@@ -1127,9 +1169,10 @@ async function forceCleanup(jailName, mounts, dataset, jailPath, epairNum = null
       log(`Force destroyed epair`, { epairNum });
       logCleanupAudit('FORCE_DESTROY_EPAIR', jailName, 'SUCCESS');
     } catch (error) {
-      log(`Could not force destroy epair: ${error.message}`, { epairNum });
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log(`Could not force destroy epair: ${errorMessage}`, { epairNum });
       logCleanupAudit('FORCE_DESTROY_EPAIR', jailName, 'FAILED', error);
-      errors.push(new Error(`Failed to force destroy epair: ${error.message}`));
+      errors.push(new Error(`Failed to force destroy epair: ${errorMessage}`));
     }
   }
 
@@ -1177,9 +1220,10 @@ export async function cleanupJail(groupId: string, mounts: JailMount[] = []): Pr
         }, 2, 500, 2000);
         logCleanupAudit('STOP_JAIL', jailName, 'SUCCESS');
       } catch (error) {
-        log(`Warning: could not stop jail during cleanup: ${error.message}`);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        log(`Warning: could not stop jail during cleanup: ${errorMessage}`);
         logCleanupAudit('STOP_JAIL', jailName, 'FAILED', error);
-        errors.push(new Error(`Failed to stop jail: ${error.message}`));
+        errors.push(new Error(`Failed to stop jail: ${errorMessage}`));
       }
     }
 
@@ -1191,9 +1235,10 @@ export async function cleanupJail(groupId: string, mounts: JailMount[] = []): Pr
         }, 2, 200, 1000);
         logCleanupAudit('RELEASE_EPAIR', jailName, 'SUCCESS');
       } catch (error) {
-        log(`Warning: could not release epair: ${error.message}`);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        log(`Warning: could not release epair: ${errorMessage}`);
         logCleanupAudit('RELEASE_EPAIR', jailName, 'FAILED', error);
-        errors.push(new Error(`Failed to release epair: ${error.message}`));
+        errors.push(new Error(`Failed to release epair: ${errorMessage}`));
       }
     }
 
