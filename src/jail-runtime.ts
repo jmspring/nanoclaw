@@ -106,7 +106,9 @@ export const JAIL_CONFIG: JailConfig = {
   workspacesPath: '/home/jims/code/nanoclaw/workspaces',
   ipcPath: '/home/jims/code/nanoclaw/ipc',
   // Network mode: "inherit" (ip4=inherit) or "restricted" (vnet with epair and pf)
-  networkMode: (process.env.NANOCLAW_JAIL_NETWORK_MODE as 'inherit' | 'restricted') || 'inherit',
+  networkMode:
+    (process.env.NANOCLAW_JAIL_NETWORK_MODE as 'inherit' | 'restricted') ||
+    'inherit',
   // Jail network configuration (used when networkMode === 'restricted')
   // Each jail gets its own /30 subnet via epair from pool 10.99.0.0/24:
   //   - Jail N uses subnet 10.99.N.0/30 (where N = epair number)
@@ -118,14 +120,23 @@ export const JAIL_CONFIG: JailConfig = {
   jailNetmask: '30',
   // Resource limits (rctl) - prevents runaway agents from crashing the host
   resourceLimits: {
-    memoryuse: process.env.NANOCLAW_JAIL_MEMORY_LIMIT || '2G',   // Memory limit
-    maxproc: process.env.NANOCLAW_JAIL_MAXPROC || '100',          // Max processes (prevents fork bombs)
-    pcpu: process.env.NANOCLAW_JAIL_PCPU || '80',                 // CPU percentage limit
+    memoryuse: process.env.NANOCLAW_JAIL_MEMORY_LIMIT || '2G', // Memory limit
+    maxproc: process.env.NANOCLAW_JAIL_MAXPROC || '100', // Max processes (prevents fork bombs)
+    pcpu: process.env.NANOCLAW_JAIL_PCPU || '80', // CPU percentage limit
   },
 };
 
 /** Track assigned epair numbers for cleanup */
 const assignedEpairs = new Map<string, number>(); // groupId -> epair number (e.g., 0 for epair0a/epair0b)
+
+/** Maximum concurrent jails (configurable via env var) */
+const MAX_CONCURRENT_JAILS = parseInt(
+  process.env.NANOCLAW_MAX_JAILS || '50',
+  10,
+);
+
+/** Track active jails */
+const activeJails = new Set<string>();
 
 /** Path to persistent epair state file */
 const EPAIR_STATE_FILE = '/tmp/nanoclaw-epair-state.json';
@@ -133,14 +144,20 @@ const EPAIR_STATE_FILE = '/tmp/nanoclaw-epair-state.json';
 /** Logging helper with prefix */
 function log(message: string, data: Record<string, unknown> = {}): void {
   const timestamp = new Date().toISOString();
-  const dataStr = Object.keys(data).length > 0 ? ` ${JSON.stringify(data)}` : '';
+  const dataStr =
+    Object.keys(data).length > 0 ? ` ${JSON.stringify(data)}` : '';
   console.log(`[jail-runtime] ${timestamp} ${message}${dataStr}`);
 }
 
 /** Cleanup audit logging */
 const CLEANUP_AUDIT_LOG = path.join(JAIL_CONFIG.jailsPath, 'cleanup-audit.log');
 
-function logCleanupAudit(action: string, jailName: string, status: string, error: unknown = null): void {
+function logCleanupAudit(
+  action: string,
+  jailName: string,
+  status: string,
+  error: unknown = null,
+): void {
   const timestamp = new Date().toISOString();
   const errorMessage = error instanceof Error ? error.message : null;
   const entry = {
@@ -172,7 +189,7 @@ async function retryWithBackoff<T>(
   fn: () => Promise<T>,
   maxRetries = 3,
   initialDelay = 100,
-  maxDelay = 5000
+  maxDelay = 5000,
 ): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -182,9 +199,12 @@ async function retryWithBackoff<T>(
       lastError = error;
       if (attempt < maxRetries) {
         const delay = Math.min(initialDelay * Math.pow(2, attempt), maxDelay);
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        log(`Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, { error: errorMessage });
-        await new Promise(resolve => setTimeout(resolve, delay));
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        log(`Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`, {
+          error: errorMessage,
+        });
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
   }
@@ -225,11 +245,19 @@ async function applyRctlLimits(jailName: string): Promise<void> {
 
   try {
     // Add memory limit
-    await sudoExec(['rctl', '-a', `jail:${jailName}:memoryuse:deny=${limits.memoryuse}`]);
+    await sudoExec([
+      'rctl',
+      '-a',
+      `jail:${jailName}:memoryuse:deny=${limits.memoryuse}`,
+    ]);
     log(`Applied memory limit`, { jailName, limit: limits.memoryuse });
 
     // Add process limit (prevents fork bombs)
-    await sudoExec(['rctl', '-a', `jail:${jailName}:maxproc:deny=${limits.maxproc}`]);
+    await sudoExec([
+      'rctl',
+      '-a',
+      `jail:${jailName}:maxproc:deny=${limits.maxproc}`,
+    ]);
     log(`Applied process limit`, { jailName, limit: limits.maxproc });
 
     // Add CPU limit
@@ -254,17 +282,26 @@ async function removeRctlLimits(jailName: string): Promise<void> {
   } catch (error) {
     // Jail may not exist or rctl rules may not be set - ignore
     const errorMessage = error instanceof Error ? error.message : String(error);
-    log(`Note: could not remove rctl limits (may not exist): ${errorMessage}`, { jailName });
+    log(`Note: could not remove rctl limits (may not exist): ${errorMessage}`, {
+      jailName,
+    });
   }
 }
 
 /** Execute a command with sudo, returning a promise */
-function sudoExec(args: string[], options: SudoExecOptions = {}): Promise<SudoExecResult> {
+function sudoExec(
+  args: string[],
+  options: SudoExecOptions = {},
+): Promise<SudoExecResult> {
   return new Promise((resolve, reject) => {
     const timeout = options.timeout || 30000;
     execFile('sudo', args, { timeout, ...options }, (error, stdout, stderr) => {
       if (error) {
-        reject(new Error(`sudo ${args.join(' ')} failed: ${stderr || error.message}`));
+        reject(
+          new Error(
+            `sudo ${args.join(' ')} failed: ${stderr || error.message}`,
+          ),
+        );
       } else {
         resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
       }
@@ -275,9 +312,15 @@ function sudoExec(args: string[], options: SudoExecOptions = {}): Promise<SudoEx
 /** Execute a command with sudo synchronously */
 function sudoExecSync(args: string[], options: SudoExecOptions = {}): string {
   try {
-    return execFileSync('sudo', args, { encoding: 'utf-8', timeout: 30000, ...options });
+    return execFileSync('sudo', args, {
+      encoding: 'utf-8',
+      timeout: 30000,
+      ...options,
+    });
   } catch (error) {
-    throw new Error(`sudo ${args.join(' ')} failed: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `sudo ${args.join(' ')} failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -310,7 +353,8 @@ function restoreEpairState(): void {
       }
       log(`Restored epair state from disk`, { count: assignedEpairs.size });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       log(`Warning: failed to restore epair state: ${errorMessage}`);
     }
   }
@@ -335,7 +379,9 @@ function restoreEpairState(): void {
     // Remove entries from Map if epair no longer exists in system
     for (const [groupId, epairNum] of assignedEpairs.entries()) {
       if (!existingEpairs.has(epairNum)) {
-        log(`Epair ${epairNum} for group ${groupId} no longer exists, removing from state`);
+        log(
+          `Epair ${epairNum} for group ${groupId} no longer exists, removing from state`,
+        );
         assignedEpairs.delete(groupId);
       }
     }
@@ -343,7 +389,10 @@ function restoreEpairState(): void {
     // Persist the cleaned-up state
     persistEpairState();
 
-    log(`Synced epair state with system`, { tracked: assignedEpairs.size, existing: existingEpairs.size });
+    log(`Synced epair state with system`, {
+      tracked: assignedEpairs.size,
+      existing: existingEpairs.size,
+    });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     log(`Warning: failed to sync epair state with system: ${errorMessage}`);
@@ -380,7 +429,7 @@ async function acquireEpairLock(): Promise<() => void> {
         throw err;
       }
       // Lock is held by another process - wait and retry
-      await new Promise(resolve => setTimeout(resolve, retryDelay));
+      await new Promise((resolve) => setTimeout(resolve, retryDelay));
     }
   }
 
@@ -410,7 +459,9 @@ async function createEpair(groupId: string): Promise<EpairInfo> {
 
     // Validate epair number fits in /24 pool (0-255)
     if (epairNum < 0 || epairNum > 255) {
-      throw new Error(`Epair number ${epairNum} exceeds /24 pool capacity (0-255)`);
+      throw new Error(
+        `Epair number ${epairNum} exceeds /24 pool capacity (0-255)`,
+      );
     }
 
     const hostIface = `epair${epairNum}a`;
@@ -431,7 +482,14 @@ async function createEpair(groupId: string): Promise<EpairInfo> {
     assignedEpairs.set(groupId, epairNum);
     persistEpairState();
 
-    log(`Created epair`, { groupId, epairNum, hostIface, jailIface, hostIP, jailIP });
+    log(`Created epair`, {
+      groupId,
+      epairNum,
+      hostIface,
+      jailIface,
+      hostIP,
+      jailIP,
+    });
     return { epairNum, hostIface, jailIface, hostIP, jailIP, netmask };
   } finally {
     // Always release lock, even on error
@@ -444,14 +502,36 @@ async function createEpair(groupId: string): Promise<EpairInfo> {
  * @param jailName - The jail name
  * @param epairInfo - Epair interface and IP information
  */
-async function configureJailNetwork(jailName: string, epairInfo: EpairInfo): Promise<void> {
+async function configureJailNetwork(
+  jailName: string,
+  epairInfo: EpairInfo,
+): Promise<void> {
   // Configure the jail's interface with its unique IP
-  await sudoExec(['jexec', jailName, 'ifconfig', epairInfo.jailIface, `${epairInfo.jailIP}/${epairInfo.netmask}`, 'up']);
+  await sudoExec([
+    'jexec',
+    jailName,
+    'ifconfig',
+    epairInfo.jailIface,
+    `${epairInfo.jailIP}/${epairInfo.netmask}`,
+    'up',
+  ]);
 
   // Add default route via the host gateway
-  await sudoExec(['jexec', jailName, 'route', 'add', 'default', epairInfo.hostIP]);
+  await sudoExec([
+    'jexec',
+    jailName,
+    'route',
+    'add',
+    'default',
+    epairInfo.hostIP,
+  ]);
 
-  log(`Configured jail network`, { jailName, jailIface: epairInfo.jailIface, ip: epairInfo.jailIP, gateway: epairInfo.hostIP });
+  log(`Configured jail network`, {
+    jailName,
+    jailIface: epairInfo.jailIface,
+    ip: epairInfo.jailIP,
+    gateway: epairInfo.hostIP,
+  });
 }
 
 /**
@@ -493,7 +573,11 @@ async function setupJailResolv(jailPath: string): Promise<void> {
 
   try {
     const hostResolv = fs.readFileSync('/etc/resolv.conf', 'utf-8');
-    await sudoExec(['sh', '-c', `cat > ${resolvPath} << 'RESOLV'\n${hostResolv}\nRESOLV`]);
+    await sudoExec([
+      'sh',
+      '-c',
+      `cat > ${resolvPath} << 'RESOLV'\n${hostResolv}\nRESOLV`,
+    ]);
     log(`Copied host resolv.conf to jail`);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -504,7 +588,9 @@ async function setupJailResolv(jailPath: string): Promise<void> {
 /** Check if a jail exists and is running */
 export function isJailRunning(jailName: string): boolean {
   try {
-    const output = sudoExecSync(['jls', '-j', jailName, 'jid'], { stdio: 'pipe' });
+    const output = sudoExecSync(['jls', '-j', jailName, 'jid'], {
+      stdio: 'pipe',
+    });
     return output.trim().length > 0;
   } catch {
     return false;
@@ -526,11 +612,11 @@ function datasetExists(dataset: string): boolean {
  * These are the 5 semantic mounts a jail needs - no Docker translation.
  */
 export const JAIL_MOUNT_LAYOUT = {
-  project: '/workspace/project',      // NanoClaw source (ro)
-  group: '/workspace/group',          // Group's folder (rw)
-  ipc: '/workspace/ipc',              // Group's IPC directory (rw)
+  project: '/workspace/project', // NanoClaw source (ro)
+  group: '/workspace/group', // Group's folder (rw)
+  ipc: '/workspace/ipc', // Group's IPC directory (rw)
   claudeSession: '/home/node/.claude', // Claude session data (rw)
-  agentRunner: '/app/src',            // Agent runner source (ro)
+  agentRunner: '/app/src', // Agent runner source (ro)
 };
 
 /**
@@ -629,7 +715,9 @@ export function ensureHostDirectories(paths: JailMountPaths): void {
         fs.chownSync(subdirPath, uid, wheelGid);
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
-        log(`Warning: could not set permissions on ${subdirPath}: ${errorMessage}`);
+        log(
+          `Warning: could not set permissions on ${subdirPath}: ${errorMessage}`,
+        );
       }
     }
   }
@@ -647,14 +735,20 @@ function buildFstab(mounts: JailMount[], jailPath: string): string {
 }
 
 /** Create mount point directories inside the jail */
-async function createMountPoints(mounts: JailMount[], jailPath: string): Promise<void> {
+async function createMountPoints(
+  mounts: JailMount[],
+  jailPath: string,
+): Promise<void> {
   const resolvedJailRoot = path.resolve(jailPath);
 
   for (const mount of mounts) {
     const targetPath = path.resolve(jailPath, mount.jailPath);
 
     // Paranoid check: target must be within jail root (defense in depth)
-    if (!targetPath.startsWith(resolvedJailRoot + path.sep) && targetPath !== resolvedJailRoot) {
+    if (
+      !targetPath.startsWith(resolvedJailRoot + path.sep) &&
+      targetPath !== resolvedJailRoot
+    ) {
       throw new Error(`Mount target escapes jail root: ${mount.jailPath}`);
     }
 
@@ -668,7 +762,10 @@ async function createMountPoints(mounts: JailMount[], jailPath: string): Promise
 }
 
 /** Mount all nullfs mounts for a jail */
-async function mountNullfs(mounts: JailMount[], jailPath: string): Promise<void> {
+async function mountNullfs(
+  mounts: JailMount[],
+  jailPath: string,
+): Promise<void> {
   const resolvedJailRoot = path.resolve(jailPath);
 
   for (const mount of mounts) {
@@ -676,7 +773,10 @@ async function mountNullfs(mounts: JailMount[], jailPath: string): Promise<void>
     const targetPath = path.resolve(jailPath, mount.jailPath);
 
     // Paranoid check: target must be within jail root (defense in depth)
-    if (!targetPath.startsWith(resolvedJailRoot + path.sep) && targetPath !== resolvedJailRoot) {
+    if (
+      !targetPath.startsWith(resolvedJailRoot + path.sep) &&
+      targetPath !== resolvedJailRoot
+    ) {
       throw new Error(`Mount target escapes jail root: ${mount.jailPath}`);
     }
 
@@ -690,7 +790,8 @@ async function mountNullfs(mounts: JailMount[], jailPath: string): Promise<void>
       await sudoExec(['mount_nullfs', '-o', opts, mount.hostPath, targetPath]);
       log(`Mounted ${mount.hostPath} -> ${targetPath} (${opts})`);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       log(`Failed to mount ${mount.hostPath}: ${errorMessage}`);
       throw error;
     }
@@ -698,7 +799,10 @@ async function mountNullfs(mounts: JailMount[], jailPath: string): Promise<void>
 }
 
 /** Unmount all nullfs mounts for a jail (reverse order) */
-async function unmountAll(mounts: JailMount[], jailPath: string): Promise<void> {
+async function unmountAll(
+  mounts: JailMount[],
+  jailPath: string,
+): Promise<void> {
   const errors: string[] = [];
   // Unmount in reverse order
   for (let i = mounts.length - 1; i >= 0; i--) {
@@ -713,7 +817,8 @@ async function unmountAll(mounts: JailMount[], jailPath: string): Promise<void> 
         await sudoExec(['umount', '-f', targetPath]);
         log(`Force unmounted ${targetPath}`);
       } catch {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
         errors.push(`Failed to unmount ${targetPath}: ${errorMessage}`);
       }
     }
@@ -730,7 +835,10 @@ async function unmountAll(mounts: JailMount[], jailPath: string): Promise<void> 
  * @param paths - Semantic mount paths
  * @returns Promise with jail name and mount specs for cleanup
  */
-export async function createJailWithPaths(groupId: string, paths: JailMountPaths): Promise<JailCreationResult> {
+export async function createJailWithPaths(
+  groupId: string,
+  paths: JailMountPaths,
+): Promise<JailCreationResult> {
   // Ensure host directories exist
   ensureHostDirectories(paths);
 
@@ -749,12 +857,23 @@ export async function createJailWithPaths(groupId: string, paths: JailMountPaths
  * @param mounts - Mount specifications
  * @returns Promise with the jail name
  */
-export async function createJail(groupId: string, mounts: JailMount[] = []): Promise<string> {
+export async function createJail(
+  groupId: string,
+  mounts: JailMount[] = [],
+): Promise<string> {
   const jailName = getJailName(groupId);
   const dataset = getJailDataset(jailName);
   const jailPath = getJailPath(jailName);
   const fstabPath = getFstabPath(jailName);
   const snapshot = `${JAIL_CONFIG.templateDataset}@${JAIL_CONFIG.templateSnapshot}`;
+
+  // Check if at capacity (only enforce for new jails, not re-creation after cleanup)
+  if (!activeJails.has(groupId) && activeJails.size >= MAX_CONCURRENT_JAILS) {
+    throw new Error(
+      `Cannot create jail: maximum concurrent jail limit reached (${MAX_CONCURRENT_JAILS}). ` +
+        `Currently active: ${activeJails.size}. Configure NANOCLAW_MAX_JAILS to adjust limit.`,
+    );
+  }
 
   log(`Creating jail`, { jailName, groupId });
 
@@ -770,7 +889,8 @@ export async function createJail(groupId: string, mounts: JailMount[] = []): Pro
     try {
       await sudoExec(['zfs', 'destroy', '-r', dataset]);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       log(`Warning: could not destroy existing dataset: ${errorMessage}`);
     }
   }
@@ -793,7 +913,11 @@ export async function createJail(groupId: string, mounts: JailMount[] = []): Pro
 
     // Create .claude directory and .claude.json for Claude Code (required before running as non-root)
     await sudoExec(['mkdir', '-p', `${jailPath}/home/node/.claude`]);
-    await sudoExec(['sh', '-c', `echo '{}' > ${jailPath}/home/node/.claude.json`]);
+    await sudoExec([
+      'sh',
+      '-c',
+      `echo '{}' > ${jailPath}/home/node/.claude.json`,
+    ]);
     await sudoExec(['chown', '-R', '1000:1000', `${jailPath}/home/node`]);
 
     // Ensure /tmp is writable by node user (entrypoint compiles TypeScript to /tmp/dist)
@@ -812,7 +936,8 @@ export async function createJail(groupId: string, mounts: JailMount[] = []): Pro
 
     // Create the jail
     const jailParams = [
-      'jail', '-c',
+      'jail',
+      '-c',
       `name=${jailName}`,
       `path=${jailPath}`,
       `host.hostname=${jailName}`,
@@ -850,7 +975,14 @@ export async function createJail(groupId: string, mounts: JailMount[] = []): Pro
       await configureJailNetwork(jailName, epairInfo);
     }
 
-    log(`Jail created successfully`, { jailName });
+    // Track active jail
+    activeJails.add(groupId);
+
+    log(`Jail created successfully`, {
+      jailName,
+      activeCount: activeJails.size,
+      maxJails: MAX_CONCURRENT_JAILS,
+    });
     return jailName;
   } catch (error) {
     // Cleanup on failure
@@ -868,7 +1000,11 @@ export async function createJail(groupId: string, mounts: JailMount[] = []): Pro
  * @param options - Execution options
  * @returns Promise with execution result
  */
-export async function execInJail(groupId: string, command: string[], options: ExecInJailOptions = {}): Promise<ExecResult> {
+export async function execInJail(
+  groupId: string,
+  command: string[],
+  options: ExecInJailOptions = {},
+): Promise<ExecResult> {
   const jailName = getJailName(groupId);
   const { env = {}, cwd, timeout, signal, onStdout, onStderr } = options;
 
@@ -930,12 +1066,17 @@ export async function execInJail(groupId: string, command: string[], options: Ex
       proc.kill('SIGKILL');
     };
 
-    const timeoutId = timeout ? setTimeout(() => {
-      if (settled) return;
-      timedOut = true;
-      log(`Execution timeout, killing jail processes`, { jailName, timeout });
-      killJailProcesses();
-    }, timeout) : null;
+    const timeoutId = timeout
+      ? setTimeout(() => {
+          if (settled) return;
+          timedOut = true;
+          log(`Execution timeout, killing jail processes`, {
+            jailName,
+            timeout,
+          });
+          killJailProcesses();
+        }, timeout)
+      : null;
 
     // Handle AbortSignal
     const abortHandler = () => {
@@ -1002,7 +1143,11 @@ export async function execInJail(groupId: string, command: string[], options: Ex
  * @param options - Spawn options
  * @returns ChildProcess
  */
-export function spawnInJail(groupId: string, command: string[], options: SpawnInJailOptions = {}): ChildProcess {
+export function spawnInJail(
+  groupId: string,
+  command: string[],
+  options: SpawnInJailOptions = {},
+): ChildProcess {
   const jailName = getJailName(groupId);
   const { env = {}, cwd } = options;
 
@@ -1059,14 +1204,20 @@ export async function stopJail(groupId: string): Promise<void> {
     log(`Jail stopped`, { jailName });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    log(`Failed to stop jail gracefully, trying force`, { jailName, error: errorMessage });
+    log(`Failed to stop jail gracefully, trying force`, {
+      jailName,
+      error: errorMessage,
+    });
     try {
       // Try to kill all processes in jail first
-      await sudoExec(['jexec', jailName, 'kill', '-9', '-1'], { timeout: 5000 }).catch(() => {});
+      await sudoExec(['jexec', jailName, 'kill', '-9', '-1'], {
+        timeout: 5000,
+      }).catch(() => {});
       await sudoExec(['jail', '-r', jailName], { timeout: 10000 });
       log(`Jail force stopped`, { jailName });
     } catch (forceError) {
-      const forceErrorMessage = forceError instanceof Error ? forceError.message : String(forceError);
+      const forceErrorMessage =
+        forceError instanceof Error ? forceError.message : String(forceError);
       log(`Failed to force stop jail`, { jailName, error: forceErrorMessage });
       throw forceError;
     }
@@ -1087,7 +1238,7 @@ async function forceCleanup(
   mounts: JailMount[],
   dataset: string,
   jailPath: string,
-  epairNum: number | null = null
+  epairNum: number | null = null,
 ): Promise<void> {
   log(`Starting force cleanup`, { jailName });
   logCleanupAudit('FORCE_CLEANUP_START', jailName, 'INFO');
@@ -1097,11 +1248,14 @@ async function forceCleanup(
   // 1. Kill all processes in jail (if still running)
   if (isJailRunning(jailName)) {
     try {
-      await sudoExec(['jexec', jailName, 'kill', '-9', '-1'], { timeout: 5000 });
+      await sudoExec(['jexec', jailName, 'kill', '-9', '-1'], {
+        timeout: 5000,
+      });
       log(`Killed all processes in jail`, { jailName });
       logCleanupAudit('KILL_PROCESSES', jailName, 'SUCCESS');
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       log(`Could not kill processes in jail: ${errorMessage}`, { jailName });
       logCleanupAudit('KILL_PROCESSES', jailName, 'FAILED', error);
       errors.push(new Error(`Failed to kill processes: ${errorMessage}`));
@@ -1113,7 +1267,8 @@ async function forceCleanup(
       log(`Force stopped jail`, { jailName });
       logCleanupAudit('FORCE_STOP_JAIL', jailName, 'SUCCESS');
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       log(`Could not force stop jail: ${errorMessage}`, { jailName });
       logCleanupAudit('FORCE_STOP_JAIL', jailName, 'FAILED', error);
       errors.push(new Error(`Failed to force stop jail: ${errorMessage}`));
@@ -1122,13 +1277,17 @@ async function forceCleanup(
 
   // 3. Force unmount devfs
   try {
-    await sudoExec(['umount', '-f', path.join(jailPath, 'dev')], { timeout: 5000 });
+    await sudoExec(['umount', '-f', path.join(jailPath, 'dev')], {
+      timeout: 5000,
+    });
     log(`Force unmounted devfs`, { jailName });
     logCleanupAudit('FORCE_UNMOUNT_DEVFS', jailName, 'SUCCESS');
   } catch (error) {
     // Expected to fail if not mounted
     const errorMessage = error instanceof Error ? error.message : String(error);
-    log(`Could not force unmount devfs (may not be mounted): ${errorMessage}`, { jailName });
+    log(`Could not force unmount devfs (may not be mounted): ${errorMessage}`, {
+      jailName,
+    });
   }
 
   // 4. Force unmount all nullfs mounts
@@ -1140,24 +1299,32 @@ async function forceCleanup(
       log(`Force unmounted ${targetPath}`);
       logCleanupAudit('FORCE_UNMOUNT_NULLFS', jailName, 'SUCCESS', null);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       log(`Could not force unmount ${targetPath}: ${errorMessage}`);
       logCleanupAudit('FORCE_UNMOUNT_NULLFS', jailName, 'FAILED', error);
-      errors.push(new Error(`Failed to force unmount ${targetPath}: ${errorMessage}`));
+      errors.push(
+        new Error(`Failed to force unmount ${targetPath}: ${errorMessage}`),
+      );
     }
   }
 
   // 5. Force destroy ZFS dataset with all dependents
   if (datasetExists(dataset)) {
     try {
-      await sudoExec(['zfs', 'destroy', '-f', '-r', dataset], { timeout: 30000 });
+      await sudoExec(['zfs', 'destroy', '-f', '-r', dataset], {
+        timeout: 30000,
+      });
       log(`Force destroyed dataset`, { dataset });
       logCleanupAudit('FORCE_DESTROY_DATASET', jailName, 'SUCCESS');
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       log(`Could not force destroy dataset: ${errorMessage}`, { dataset });
       logCleanupAudit('FORCE_DESTROY_DATASET', jailName, 'FAILED', error);
-      errors.push(new Error(`Failed to force destroy dataset: ${errorMessage}`));
+      errors.push(
+        new Error(`Failed to force destroy dataset: ${errorMessage}`),
+      );
     }
   }
 
@@ -1169,7 +1336,8 @@ async function forceCleanup(
       log(`Force destroyed epair`, { epairNum });
       logCleanupAudit('FORCE_DESTROY_EPAIR', jailName, 'SUCCESS');
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       log(`Could not force destroy epair: ${errorMessage}`, { epairNum });
       logCleanupAudit('FORCE_DESTROY_EPAIR', jailName, 'FAILED', error);
       errors.push(new Error(`Failed to force destroy epair: ${errorMessage}`));
@@ -1177,8 +1345,16 @@ async function forceCleanup(
   }
 
   if (errors.length > 0) {
-    logCleanupAudit('FORCE_CLEANUP_END', jailName, 'PARTIAL', new Error(`${errors.length} errors during force cleanup`));
-    throw new AggregateError(errors, `Force cleanup completed with ${errors.length} error(s)`);
+    logCleanupAudit(
+      'FORCE_CLEANUP_END',
+      jailName,
+      'PARTIAL',
+      new Error(`${errors.length} errors during force cleanup`),
+    );
+    throw new AggregateError(
+      errors,
+      `Force cleanup completed with ${errors.length} error(s)`,
+    );
   } else {
     logCleanupAudit('FORCE_CLEANUP_END', jailName, 'SUCCESS');
   }
@@ -1191,7 +1367,10 @@ async function forceCleanup(
  * @param groupId - The group identifier
  * @param mounts - Mount specifications (for unmounting)
  */
-export async function cleanupJail(groupId: string, mounts: JailMount[] = []): Promise<void> {
+export async function cleanupJail(
+  groupId: string,
+  mounts: JailMount[] = [],
+): Promise<void> {
   const jailName = getJailName(groupId);
   const dataset = getJailDataset(jailName);
   const jailPath = getJailPath(jailName);
@@ -1201,9 +1380,10 @@ export async function cleanupJail(groupId: string, mounts: JailMount[] = []): Pr
   logCleanupAudit('CLEANUP_START', jailName, 'INFO');
 
   const errors = [];
-  const epairNum = JAIL_CONFIG.networkMode === 'restricted' && assignedEpairs.has(groupId)
-    ? assignedEpairs.get(groupId)
-    : null;
+  const epairNum =
+    JAIL_CONFIG.networkMode === 'restricted' && assignedEpairs.has(groupId)
+      ? assignedEpairs.get(groupId)
+      : null;
 
   // Remove rctl limits before stopping jail
   await removeRctlLimits(jailName);
@@ -1212,15 +1392,21 @@ export async function cleanupJail(groupId: string, mounts: JailMount[] = []): Pr
     // Stop jail if running (with retry)
     if (isJailRunning(jailName)) {
       try {
-        await retryWithBackoff(async () => {
-          await stopJail(groupId);
-          if (isJailRunning(jailName)) {
-            throw new Error('Jail still running after stop');
-          }
-        }, 2, 500, 2000);
+        await retryWithBackoff(
+          async () => {
+            await stopJail(groupId);
+            if (isJailRunning(jailName)) {
+              throw new Error('Jail still running after stop');
+            }
+          },
+          2,
+          500,
+          2000,
+        );
         logCleanupAudit('STOP_JAIL', jailName, 'SUCCESS');
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
         log(`Warning: could not stop jail during cleanup: ${errorMessage}`);
         logCleanupAudit('STOP_JAIL', jailName, 'FAILED', error);
         errors.push(new Error(`Failed to stop jail: ${errorMessage}`));
@@ -1230,12 +1416,18 @@ export async function cleanupJail(groupId: string, mounts: JailMount[] = []): Pr
     // Destroy epair if in restricted network mode (with retry)
     if (epairNum !== null) {
       try {
-        await retryWithBackoff(async () => {
-          await releaseEpair(groupId);
-        }, 2, 200, 1000);
+        await retryWithBackoff(
+          async () => {
+            await releaseEpair(groupId);
+          },
+          2,
+          200,
+          1000,
+        );
         logCleanupAudit('RELEASE_EPAIR', jailName, 'SUCCESS');
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
         log(`Warning: could not release epair: ${errorMessage}`);
         logCleanupAudit('RELEASE_EPAIR', jailName, 'FAILED', error);
         errors.push(new Error(`Failed to release epair: ${errorMessage}`));
@@ -1248,38 +1440,53 @@ export async function cleanupJail(groupId: string, mounts: JailMount[] = []): Pr
       logCleanupAudit('UNMOUNT_DEVFS', jailName, 'SUCCESS');
     } catch (error) {
       // Expected to fail if devfs not mounted, don't add to errors
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       log(`Devfs unmount (expected to fail if not mounted): ${errorMessage}`);
     }
 
     // Unmount nullfs mounts (with retry)
     if (mounts.length > 0) {
       try {
-        await retryWithBackoff(async () => {
-          await unmountAll(mounts, jailPath);
-        }, 2, 300, 2000);
+        await retryWithBackoff(
+          async () => {
+            await unmountAll(mounts, jailPath);
+          },
+          2,
+          300,
+          2000,
+        );
         logCleanupAudit('UNMOUNT_NULLFS', jailName, 'SUCCESS');
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
         log(`Warning: could not unmount all filesystems: ${errorMessage}`);
         logCleanupAudit('UNMOUNT_NULLFS', jailName, 'FAILED', error);
-        errors.push(new Error(`Failed to unmount filesystems: ${errorMessage}`));
+        errors.push(
+          new Error(`Failed to unmount filesystems: ${errorMessage}`),
+        );
       }
     }
 
     // Destroy ZFS dataset (with retry)
     if (datasetExists(dataset)) {
       try {
-        await retryWithBackoff(async () => {
-          await sudoExec(['zfs', 'destroy', '-r', dataset]);
-          if (datasetExists(dataset)) {
-            throw new Error('Dataset still exists after destroy');
-          }
-        }, 2, 500, 3000);
+        await retryWithBackoff(
+          async () => {
+            await sudoExec(['zfs', 'destroy', '-r', dataset]);
+            if (datasetExists(dataset)) {
+              throw new Error('Dataset still exists after destroy');
+            }
+          },
+          2,
+          500,
+          3000,
+        );
         log(`Destroyed dataset`, { dataset });
         logCleanupAudit('DESTROY_DATASET', jailName, 'SUCCESS');
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
         log(`Warning: could not destroy dataset: ${errorMessage}`);
         logCleanupAudit('DESTROY_DATASET', jailName, 'FAILED', error);
         errors.push(new Error(`Failed to destroy dataset: ${errorMessage}`));
@@ -1293,29 +1500,44 @@ export async function cleanupJail(groupId: string, mounts: JailMount[] = []): Pr
         log(`Removed fstab`, { fstabPath });
         logCleanupAudit('REMOVE_FSTAB', jailName, 'SUCCESS');
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
         log(`Warning: could not remove fstab: ${errorMessage}`);
         logCleanupAudit('REMOVE_FSTAB', jailName, 'FAILED', error);
         errors.push(new Error(`Failed to remove fstab: ${errorMessage}`));
       }
     }
   } catch (unexpectedError) {
-    const errorMessage = unexpectedError instanceof Error ? unexpectedError.message : String(unexpectedError);
+    const errorMessage =
+      unexpectedError instanceof Error
+        ? unexpectedError.message
+        : String(unexpectedError);
     log(`Unexpected error during cleanup: ${errorMessage}`, { jailName });
-    logCleanupAudit('CLEANUP_UNEXPECTED_ERROR', jailName, 'FAILED', unexpectedError);
+    logCleanupAudit(
+      'CLEANUP_UNEXPECTED_ERROR',
+      jailName,
+      'FAILED',
+      unexpectedError,
+    );
     errors.push(unexpectedError as Error);
   } finally {
     // If normal cleanup had errors, try force cleanup
     if (errors.length > 0) {
-      log(`Normal cleanup failed with ${errors.length} error(s), attempting force cleanup`, { jailName });
+      log(
+        `Normal cleanup failed with ${errors.length} error(s), attempting force cleanup`,
+        { jailName },
+      );
       logCleanupAudit('CLEANUP_FALLBACK_TO_FORCE', jailName, 'INFO');
 
       try {
         await forceCleanup(jailName, mounts, dataset, jailPath, epairNum);
-        log(`Force cleanup succeeded after normal cleanup failed`, { jailName });
+        log(`Force cleanup succeeded after normal cleanup failed`, {
+          jailName,
+        });
         logCleanupAudit('CLEANUP_END', jailName, 'SUCCESS_FORCED');
       } catch (forceError) {
-        const errorMessage = forceError instanceof Error ? forceError.message : String(forceError);
+        const errorMessage =
+          forceError instanceof Error ? forceError.message : String(forceError);
         log(`Force cleanup also failed`, { jailName, error: errorMessage });
         logCleanupAudit('CLEANUP_END', jailName, 'FAILED', forceError);
 
@@ -1326,12 +1548,22 @@ export async function cleanupJail(groupId: string, mounts: JailMount[] = []): Pr
           errors.push(forceError as Error);
         }
 
-        throw new AggregateError(errors, `Jail cleanup failed (tried normal and force): ${errors.length} error(s)`);
+        throw new AggregateError(
+          errors,
+          `Jail cleanup failed (tried normal and force): ${errors.length} error(s)`,
+        );
       }
     } else {
       log(`Jail cleanup completed successfully`, { jailName });
       logCleanupAudit('CLEANUP_END', jailName, 'SUCCESS');
     }
+
+    // Remove from active jails tracking
+    activeJails.delete(groupId);
+    log(`Removed jail from active tracking`, {
+      jailName,
+      activeCount: activeJails.size,
+    });
   }
 }
 
@@ -1340,9 +1572,36 @@ export async function cleanupJail(groupId: string, mounts: JailMount[] = []): Pr
  * @param groupId - The group identifier
  * @param mounts - Mount specifications
  */
-export async function destroyJail(groupId: string, mounts: JailMount[] = []): Promise<void> {
+export async function destroyJail(
+  groupId: string,
+  mounts: JailMount[] = [],
+): Promise<void> {
   // cleanupJail handles stopping if needed, unmounting, and ZFS cleanup
   await cleanupJail(groupId, mounts);
+}
+
+/**
+ * Get the current number of active jails.
+ * @returns Current active jail count
+ */
+export function getActiveJailCount(): number {
+  return activeJails.size;
+}
+
+/**
+ * Get the current jail capacity status.
+ * @returns Object with current count and max limit
+ */
+export function getJailCapacity(): { current: number; max: number } {
+  return { current: activeJails.size, max: MAX_CONCURRENT_JAILS };
+}
+
+/**
+ * Check if the jail system is at capacity.
+ * @returns True if at or above the maximum concurrent jail limit
+ */
+export function isAtJailCapacity(): boolean {
+  return activeJails.size >= MAX_CONCURRENT_JAILS;
 }
 
 /** Ensure the jail subsystem is available. */
@@ -1353,7 +1612,10 @@ export function ensureJailRuntimeRunning(): void {
 
     // Check template snapshot exists
     const snapshot = `${JAIL_CONFIG.templateDataset}@${JAIL_CONFIG.templateSnapshot}`;
-    execFileSync('zfs', ['list', '-t', 'snapshot', '-H', snapshot], { stdio: 'pipe', timeout: 5000 });
+    execFileSync('zfs', ['list', '-t', 'snapshot', '-H', snapshot], {
+      stdio: 'pipe',
+      timeout: 5000,
+    });
 
     // Check jail command is available
     execFileSync('which', ['jail'], { stdio: 'pipe', timeout: 5000 });
@@ -1402,13 +1664,18 @@ export function cleanupOrphans(): void {
       encoding: 'utf-8',
     });
 
-    const orphans = output.trim().split('\n')
-      .filter(line => line.startsWith('nanoclaw_'));
+    const orphans = output
+      .trim()
+      .split('\n')
+      .filter((line) => line.startsWith('nanoclaw_'));
 
     for (const jailName of orphans) {
       // Remove rctl limits for orphaned jail
       try {
-        execFileSync('sudo', ['rctl', '-r', `jail:${jailName}`], { stdio: 'pipe', timeout: 5000 });
+        execFileSync('sudo', ['rctl', '-r', `jail:${jailName}`], {
+          stdio: 'pipe',
+          timeout: 5000,
+        });
         log(`Removed rctl limits for orphaned jail`, { jailName });
       } catch {
         // May not have rctl rules - ignore
@@ -1416,7 +1683,10 @@ export function cleanupOrphans(): void {
 
       try {
         log(`Stopping orphaned jail`, { jailName });
-        execFileSync('sudo', ['jail', '-r', jailName], { stdio: 'pipe', timeout: 15000 });
+        execFileSync('sudo', ['jail', '-r', jailName], {
+          stdio: 'pipe',
+          timeout: 15000,
+        });
         log(`Stopped orphaned jail`, { jailName });
       } catch {
         // Already stopped or failed - try cleanup anyway
@@ -1426,10 +1696,14 @@ export function cleanupOrphans(): void {
       // Unmount any nullfs mounts for this jail before destroying dataset
       const orphanJailPath = getJailPath(jailName);
       try {
-        const mountOutput = execFileSync('mount', ['-t', 'nullfs'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
-        const jailMounts = mountOutput.split('\n')
-          .filter(line => line.includes(orphanJailPath))
-          .map(line => {
+        const mountOutput = execFileSync('mount', ['-t', 'nullfs'], {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        const jailMounts = mountOutput
+          .split('\n')
+          .filter((line) => line.includes(orphanJailPath))
+          .map((line) => {
             const match = line.match(/on (.+?) \(/);
             return match ? match[1] : null;
           })
@@ -1438,7 +1712,10 @@ export function cleanupOrphans(): void {
 
         for (const mountPoint of jailMounts) {
           try {
-            execFileSync('sudo', ['umount', '-f', mountPoint], { stdio: 'pipe', timeout: 5000 });
+            execFileSync('sudo', ['umount', '-f', mountPoint], {
+              stdio: 'pipe',
+              timeout: 5000,
+            });
             log(`Unmounted orphan mount`, { mountPoint });
           } catch {
             log(`Could not unmount orphan mount`, { mountPoint });
@@ -1452,7 +1729,10 @@ export function cleanupOrphans(): void {
       const dataset = `${JAIL_CONFIG.jailsDataset}/${jailName}`;
       if (datasetExists(dataset)) {
         try {
-          execFileSync('sudo', ['zfs', 'destroy', '-r', dataset], { stdio: 'pipe', timeout: 15000 });
+          execFileSync('sudo', ['zfs', 'destroy', '-r', dataset], {
+            stdio: 'pipe',
+            timeout: 15000,
+          });
           log(`Destroyed orphan dataset`, { dataset });
         } catch {
           log(`Could not destroy orphan dataset`, { dataset });
@@ -1490,7 +1770,9 @@ export function cleanupOrphans(): void {
           if (match) {
             const epairNum = parseInt(match[1], 10);
             // Check if this epair is tracked (if not, it's orphaned)
-            const isTracked = Array.from(assignedEpairs.values()).includes(epairNum);
+            const isTracked = Array.from(assignedEpairs.values()).includes(
+              epairNum,
+            );
             if (!isTracked) {
               try {
                 execFileSync('sudo', ['ifconfig', iface, 'destroy'], {
@@ -1510,7 +1792,10 @@ export function cleanupOrphans(): void {
     }
 
     if (orphans.length > 0) {
-      log(`Cleaned up orphaned jails`, { count: orphans.length, names: orphans });
+      log(`Cleaned up orphaned jails`, {
+        count: orphans.length,
+        names: orphans,
+      });
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
@@ -1532,7 +1817,10 @@ export async function cleanupAllJails(): Promise<void> {
       stdio: ['pipe', 'pipe', 'pipe'],
       encoding: 'utf-8',
     });
-    jailNames = output.trim().split('\n').filter(line => line.startsWith('nanoclaw_'));
+    jailNames = output
+      .trim()
+      .split('\n')
+      .filter((line) => line.startsWith('nanoclaw_'));
   } catch (err) {
     // No jails running or jls failed
     const errorMessage = err instanceof Error ? err.message : String(err);
@@ -1558,7 +1846,10 @@ export async function cleanupAllJails(): Promise<void> {
       log(`Removed rctl limits`, { jailName });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      log(`Failed to remove rctl limits, continuing cleanup`, { jailName, error: errorMessage });
+      log(`Failed to remove rctl limits, continuing cleanup`, {
+        jailName,
+        error: errorMessage,
+      });
     }
 
     // Step 1: Stop the jail
@@ -1568,16 +1859,24 @@ export async function cleanupAllJails(): Promise<void> {
       log(`Stopped jail`, { jailName });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      log(`Failed to stop jail, continuing cleanup`, { jailName, error: errorMessage });
+      log(`Failed to stop jail, continuing cleanup`, {
+        jailName,
+        error: errorMessage,
+      });
     }
 
     // Step 2: Unmount devfs
     try {
-      await sudoExec(['umount', '-f', path.join(jailPath, 'dev')], { timeout: 5000 });
+      await sudoExec(['umount', '-f', path.join(jailPath, 'dev')], {
+        timeout: 5000,
+      });
       log(`Unmounted devfs`, { jailName });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      log(`Failed to unmount devfs, continuing`, { jailName, error: errorMessage });
+      log(`Failed to unmount devfs, continuing`, {
+        jailName,
+        error: errorMessage,
+      });
     }
 
     // Step 3: Unmount all nullfs mounts under jailPath
@@ -1586,9 +1885,10 @@ export async function cleanupAllJails(): Promise<void> {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
       });
-      const jailMounts = mountOutput.split('\n')
-        .filter(line => line.includes(jailPath))
-        .map(line => {
+      const jailMounts = mountOutput
+        .split('\n')
+        .filter((line) => line.includes(jailPath))
+        .map((line) => {
           const match = line.match(/on (.+?) \(/);
           return match ? match[1] : null;
         })
@@ -1601,12 +1901,18 @@ export async function cleanupAllJails(): Promise<void> {
           log(`Unmounted nullfs`, { mountPoint });
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : String(err);
-          log(`Failed to unmount nullfs, continuing`, { mountPoint, error: errorMessage });
+          log(`Failed to unmount nullfs, continuing`, {
+            mountPoint,
+            error: errorMessage,
+          });
         }
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      log(`Failed to list/unmount nullfs mounts`, { jailName, error: errorMessage });
+      log(`Failed to list/unmount nullfs mounts`, {
+        jailName,
+        error: errorMessage,
+      });
     }
 
     // Step 4: Destroy ZFS dataset
@@ -1616,7 +1922,10 @@ export async function cleanupAllJails(): Promise<void> {
         log(`Destroyed ZFS dataset`, { dataset });
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
-        log(`Failed to destroy ZFS dataset, continuing`, { dataset, error: errorMessage });
+        log(`Failed to destroy ZFS dataset, continuing`, {
+          dataset,
+          error: errorMessage,
+        });
       }
     }
 
@@ -1627,7 +1936,10 @@ export async function cleanupAllJails(): Promise<void> {
         log(`Removed fstab file`, { fstabPath });
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
-        log(`Failed to remove fstab file, continuing`, { fstabPath, error: errorMessage });
+        log(`Failed to remove fstab file, continuing`, {
+          fstabPath,
+          error: errorMessage,
+        });
       }
     }
 
@@ -1652,7 +1964,8 @@ export async function cleanupAllJails(): Promise<void> {
             await sudoExec(['ifconfig', iface, 'destroy']);
             log(`Destroyed epair`, { iface });
           } catch (err) {
-            const errorMessage = err instanceof Error ? err.message : String(err);
+            const errorMessage =
+              err instanceof Error ? err.message : String(err);
             log(`Failed to destroy epair`, { iface, error: errorMessage });
           }
         }
