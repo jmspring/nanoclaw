@@ -152,6 +152,76 @@ const EPAIR_STATE_FILE = '/tmp/nanoclaw-epair-state.json';
 /** Cleanup audit logging */
 const CLEANUP_AUDIT_LOG = path.join(JAIL_CONFIG.jailsPath, 'cleanup-audit.log');
 
+/** Track temporary files/directories created during session */
+const sessionTempFiles = new Set<string>();
+
+/** Track per-jail temp directories that need cleanup */
+const jailTempDirs = new Map<string, Set<string>>(); // groupId -> Set of temp paths
+
+/** Epair lock directory path */
+const EPAIR_LOCK_DIR = '/tmp/nanoclaw-epair.lock';
+
+/**
+ * Track temp files created during a jail session for later cleanup.
+ * @param groupId - The group identifier
+ * @param tempPath - The path inside the jail's /tmp directory (e.g., '/tmp/dist', '/tmp/input.json')
+ */
+export function trackJailTempFile(groupId: string, tempPath: string): void {
+  if (!jailTempDirs.has(groupId)) {
+    jailTempDirs.set(groupId, new Set());
+  }
+  jailTempDirs.get(groupId)!.add(tempPath);
+  logger.debug({ groupId, tempPath }, 'Tracking jail temp file');
+}
+
+/**
+ * Clean up tracked temp files for a jail session.
+ * Removes /tmp/dist, /tmp/input.json, and other tracked temp files.
+ * @param groupId - The group identifier
+ */
+async function cleanupJailTempFiles(groupId: string): Promise<void> {
+  const jailName = getJailName(groupId);
+  let tempPaths = jailTempDirs.get(groupId);
+
+  if (!tempPaths || tempPaths.size === 0) {
+    // Always try to clean up common temp files even if not tracked
+    tempPaths = new Set(['/tmp/dist', '/tmp/input.json']);
+  }
+
+  if (!isJailRunning(jailName)) {
+    logger.debug(
+      { groupId, jailName },
+      'Jail not running, skipping temp file cleanup',
+    );
+    jailTempDirs.delete(groupId);
+    return;
+  }
+
+  logger.info(
+    { groupId, jailName, count: tempPaths.size },
+    'Cleaning up jail temp files',
+  );
+
+  for (const tempPath of tempPaths) {
+    try {
+      // Use rm -rf to remove both files and directories
+      await sudoExec(['jexec', jailName, 'rm', '-rf', tempPath], {
+        timeout: 5000,
+      });
+      logger.debug({ groupId, tempPath }, 'Removed jail temp file');
+    } catch (error) {
+      // File may not exist or already cleaned up - this is fine
+      logger.debug(
+        { groupId, tempPath, err: error },
+        'Could not remove jail temp file (may not exist)',
+      );
+    }
+  }
+
+  // Clear tracking for this jail
+  jailTempDirs.delete(groupId);
+}
+
 function logCleanupAudit(
   action: string,
   jailName: string,
@@ -413,21 +483,24 @@ function restoreEpairState(): void {
  * @returns Unlock function to release the lock
  */
 async function acquireEpairLock(): Promise<() => void> {
-  const lockDir = '/tmp/nanoclaw-epair.lock';
   const maxRetries = 100;
   const retryDelay = 50; // milliseconds
 
   for (let i = 0; i < maxRetries; i++) {
     try {
       // Atomic operation: mkdir fails if directory exists
-      fs.mkdirSync(lockDir, { mode: 0o755 });
+      fs.mkdirSync(EPAIR_LOCK_DIR, { mode: 0o755 });
+
+      // Track this temp directory for cleanup
+      sessionTempFiles.add(EPAIR_LOCK_DIR);
 
       // Lock acquired - return unlock function
       return () => {
         try {
-          fs.rmdirSync(lockDir);
+          fs.rmdirSync(EPAIR_LOCK_DIR);
+          sessionTempFiles.delete(EPAIR_LOCK_DIR);
         } catch (err) {
-          logger.warn({ err, lockDir }, 'Failed to release epair lock');
+          logger.warn({ err, lockDir: EPAIR_LOCK_DIR }, 'Failed to release epair lock');
         }
       };
     } catch (err) {
@@ -1444,6 +1517,19 @@ export async function cleanupJail(
       ? assignedEpairs.get(groupId)
       : null;
 
+  // Clean up temp files inside jail before stopping
+  try {
+    await cleanupJailTempFiles(groupId);
+    logCleanupAudit('CLEANUP_TEMP_FILES', jailName, 'SUCCESS');
+  } catch (error) {
+    logger.warn(
+      { jailName, groupId, err: error },
+      'Could not clean up temp files',
+    );
+    logCleanupAudit('CLEANUP_TEMP_FILES', jailName, 'FAILED', error);
+    // Don't add to errors - temp file cleanup is best-effort
+  }
+
   // Remove rctl limits before stopping jail
   await removeRctlLimits(jailName);
 
@@ -1703,8 +1789,59 @@ export function ensureJailRuntimeRunning(): void {
   }
 }
 
+/**
+ * Clean up orphaned temp files in all running NanoClaw jails.
+ * Removes common temp directories like /tmp/dist and /tmp/input.json.
+ */
+function cleanupOrphanedTempFiles(): void {
+  try {
+    // List all running jails with nanoclaw_ prefix
+    const output = execFileSync('sudo', ['jls', '-N', 'name'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      encoding: 'utf-8',
+    });
+
+    const jailNames = output
+      .trim()
+      .split('\n')
+      .filter((line) => line.startsWith('nanoclaw_'));
+
+    if (jailNames.length === 0) {
+      return;
+    }
+
+    logger.info(
+      { count: jailNames.length },
+      'Cleaning orphaned temp files from running jails',
+    );
+
+    for (const jailName of jailNames) {
+      // Clean up common temp files from previous sessions
+      const tempPaths = ['/tmp/dist', '/tmp/input.json'];
+      for (const tempPath of tempPaths) {
+        try {
+          execFileSync('sudo', ['jexec', jailName, 'rm', '-rf', tempPath], {
+            stdio: 'pipe',
+            timeout: 5000,
+          });
+          logger.debug({ jailName, tempPath }, 'Removed orphaned temp file');
+        } catch {
+          // File may not exist - this is fine
+        }
+      }
+    }
+
+    logger.info('Completed orphaned temp file cleanup');
+  } catch (err) {
+    logger.debug({ err }, 'No running jails found for temp file cleanup');
+  }
+}
+
 /** Kill orphaned NanoClaw jails from previous runs. */
 export function cleanupOrphans(): void {
+  // First, clean up temp files in any running jails
+  cleanupOrphanedTempFiles();
+
   try {
     // List all running jails with nanoclaw_ prefix
     const output = execFileSync('sudo', ['jls', '-N', 'name'], {
@@ -2016,6 +2153,52 @@ export async function cleanupAllJails(): Promise<void> {
   }
 
   logger.info('Finished cleaning up all NanoClaw jails');
+
+  // Clean up host-side temp files
+  cleanupHostTempFiles();
+}
+
+/**
+ * Clean up host-side temporary files created during sessions.
+ * Removes epair lock directory and clears session tracking.
+ */
+function cleanupHostTempFiles(): void {
+  logger.info('Cleaning up host-side temp files');
+
+  // Clean up epair lock directory if it exists
+  if (fs.existsSync(EPAIR_LOCK_DIR)) {
+    try {
+      fs.rmdirSync(EPAIR_LOCK_DIR);
+      logger.debug({ lockDir: EPAIR_LOCK_DIR }, 'Removed epair lock directory');
+    } catch (err) {
+      logger.debug(
+        { err, lockDir: EPAIR_LOCK_DIR },
+        'Could not remove epair lock directory',
+      );
+    }
+  }
+
+  // Clean up all tracked session temp files
+  for (const tempFile of sessionTempFiles) {
+    try {
+      if (fs.existsSync(tempFile)) {
+        if (fs.statSync(tempFile).isDirectory()) {
+          fs.rmdirSync(tempFile);
+        } else {
+          fs.unlinkSync(tempFile);
+        }
+        logger.debug({ tempFile }, 'Removed session temp file');
+      }
+    } catch (err) {
+      logger.debug({ err, tempFile }, 'Could not remove session temp file');
+    }
+  }
+
+  // Clear tracking
+  sessionTempFiles.clear();
+  jailTempDirs.clear();
+
+  logger.debug('Completed host-side temp file cleanup');
 }
 
 /**
