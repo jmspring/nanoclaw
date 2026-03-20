@@ -2201,3 +2201,36 @@ export function getEpairMetrics(): {
     warningThreshold: EPAIR_WARNING_THRESHOLD,
   };
 }
+
+/**
+ * List all running NanoClaw jails.
+ * @returns Array of jail names
+ */
+export function listRunningNanoclawJails(): string[] {
+  try {
+    const output = execFileSync('sudo', ['jls', '-N', 'name'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      encoding: 'utf-8',
+    });
+
+    return output
+      .trim()
+      .split('\n')
+      .filter((line) => line.startsWith('nanoclaw_'));
+  } catch (err) {
+    logger.debug({ err }, 'No running jails found or jls failed');
+    return [];
+  }
+}
+
+/**
+ * Track a jail as active so it won't be cleaned up as an orphan.
+ * Called during startup to reconnect to existing jails.
+ * @param jailName - The jail name
+ */
+export function trackActiveJail(jailName: string): void {
+  // Extract groupId from jail name (nanoclaw_<groupId>)
+  const groupId = jailName.replace(/^nanoclaw_/, '');
+  activeJails.add(groupId);
+  logger.debug({ jailName, groupId }, 'Tracked active jail');
+}

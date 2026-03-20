@@ -5,6 +5,7 @@ import pino from 'pino';
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
+  DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   METRICS_ENABLED,
@@ -75,6 +76,9 @@ let messageLoopRunning = false;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
+/** Path to persistent session state file */
+const SESSION_STATE_FILE = path.join(DATA_DIR, 'session-state.json');
+
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
   const agentTs = getRouterState('last_agent_timestamp');
@@ -86,6 +90,10 @@ function loadState(): void {
   }
   sessions = getAllSessions();
   registeredGroups = getAllRegisteredGroups();
+
+  // Restore session state from disk (for crash recovery)
+  restoreSessionState();
+
   logger.info(
     { groupCount: Object.keys(registeredGroups).length },
     'State loaded',
@@ -95,6 +103,96 @@ function loadState(): void {
 function saveState(): void {
   setRouterState('last_timestamp', lastTimestamp);
   setRouterState('last_agent_timestamp', JSON.stringify(lastAgentTimestamp));
+}
+
+/**
+ * Save session state to disk for crash recovery.
+ * Persists active session IDs so they can be restored on restart.
+ */
+function saveSessionState(): void {
+  try {
+    fs.mkdirSync(path.dirname(SESSION_STATE_FILE), { recursive: true });
+    const state = {
+      sessions,
+      timestamp: new Date().toISOString(),
+    };
+    const tempFile = `${SESSION_STATE_FILE}.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify(state, null, 2));
+    fs.renameSync(tempFile, SESSION_STATE_FILE);
+    logger.debug({ sessionCount: Object.keys(sessions).length }, 'Session state saved');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to save session state');
+  }
+}
+
+/**
+ * Restore session state from disk after a restart.
+ * Merges with database sessions (database is source of truth for old sessions).
+ */
+function restoreSessionState(): void {
+  try {
+    if (!fs.existsSync(SESSION_STATE_FILE)) {
+      logger.debug('No session state file found, starting fresh');
+      return;
+    }
+
+    const data = fs.readFileSync(SESSION_STATE_FILE, 'utf-8');
+    const state = JSON.parse(data);
+
+    if (!state.sessions || typeof state.sessions !== 'object') {
+      logger.warn('Invalid session state file, ignoring');
+      return;
+    }
+
+    // Merge restored sessions with database sessions
+    // Database sessions are authoritative, but we preserve new sessions from the state file
+    for (const [groupFolder, sessionId] of Object.entries<string>(state.sessions)) {
+      if (sessionId && !sessions[groupFolder]) {
+        sessions[groupFolder] = sessionId;
+        setSession(groupFolder, sessionId);
+      }
+    }
+
+    logger.info(
+      { restoredCount: Object.keys(state.sessions).length, timestamp: state.timestamp },
+      'Session state restored from disk',
+    );
+  } catch (err) {
+    logger.warn({ err }, 'Failed to restore session state, starting fresh');
+  }
+}
+
+/**
+ * Reconnect to existing running jails after a restart.
+ * If jails are still running (e.g., after a graceful shutdown that preserved them),
+ * track them in the active jails set so they won't be cleaned up as orphans.
+ */
+async function reconnectToRunningJails(): Promise<void> {
+  if (getRuntime() !== 'jail') {
+    return;
+  }
+
+  try {
+    const jailRuntime = await import('./jail-runtime.js');
+    const runningJails = jailRuntime.listRunningNanoclawJails();
+
+    if (runningJails.length === 0) {
+      logger.debug('No running jails found to reconnect');
+      return;
+    }
+
+    // Track all running jails so cleanupOrphans won't kill them immediately
+    for (const jailName of runningJails) {
+      jailRuntime.trackActiveJail(jailName);
+    }
+
+    logger.info(
+      { count: runningJails.length, jails: runningJails },
+      'Reconnected to existing running jails',
+    );
+  } catch (err) {
+    logger.warn({ err }, 'Failed to reconnect to running jails');
+  }
 }
 
 function registerGroup(jid: string, group: RegisteredGroup): void {
@@ -323,6 +421,7 @@ async function runAgent(
         if (output.newSessionId) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
+          saveSessionState(); // Persist to disk immediately for crash recovery
         }
         await onOutput(output);
       }
@@ -349,6 +448,7 @@ async function runAgent(
     if (output.newSessionId) {
       sessions[group.folder] = output.newSessionId;
       setSession(group.folder, output.newSessionId);
+      saveSessionState(); // Persist to disk immediately for crash recovery
     }
 
     if (output.status === 'error') {
@@ -501,6 +601,9 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
+  // Reconnect to any jails that survived a restart
+  await reconnectToRunningJails();
+
   // Start credential proxy (containers route API calls through this)
   const proxyServer = await startCredentialProxy(
     CREDENTIAL_PROXY_PORT,
@@ -536,6 +639,10 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received');
+
+    // Save session state for recovery on restart
+    saveSessionState();
+
     proxyServer.close();
     if (metricsServer) metricsServer.close();
     await queue.shutdown(10000);
@@ -658,6 +765,11 @@ async function main(): Promise<void> {
     process.exit(1);
   });
 
+  // Periodic session state save (runs every 5 minutes for crash recovery)
+  const sessionSaveInterval = setInterval(() => {
+    saveSessionState();
+  }, 5 * 60 * 1000); // 5 minutes
+
   // Periodic log cleanup (runs daily)
   const logCleanupInterval = setInterval(
     () => {
@@ -670,6 +782,7 @@ async function main(): Promise<void> {
   // Clean up on shutdown
   const originalShutdown = shutdown;
   const shutdownWithCleanup = async (signal: string) => {
+    clearInterval(sessionSaveInterval);
     clearInterval(logCleanupInterval);
     await originalShutdown(signal);
   };
