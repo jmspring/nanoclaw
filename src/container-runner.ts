@@ -135,12 +135,31 @@ function buildJailMountPaths(
     'src',
   );
 
+  // Additional mounts validated against external allowlist (tamper-proof from containers)
+  let validatedAdditionalMounts:
+    | Array<{ hostPath: string; jailPath: string; readonly: boolean }>
+    | undefined;
+  if (group.containerConfig?.additionalMounts) {
+    const dockerMounts = validateAdditionalMounts(
+      group.containerConfig.additionalMounts,
+      group.name,
+      isMain,
+    );
+    // Convert Docker mount paths (/workspace/extra/...) to jail mount paths
+    validatedAdditionalMounts = dockerMounts.map((m) => ({
+      hostPath: m.hostPath,
+      jailPath: m.containerPath,
+      readonly: m.readonly,
+    }));
+  }
+
   return {
     projectPath: isMain ? projectRoot : null, // Only main gets project access
     groupPath: groupDir,
     ipcPath: groupIpcDir,
     claudeSessionPath: groupSessionsDir,
     agentRunnerPath: agentRunnerSrc,
+    additionalMounts: validatedAdditionalMounts,
   };
 }
 
@@ -417,6 +436,10 @@ async function runJailAgent(
     );
     jailName = result.jailName;
     jailMounts = result.mounts;
+
+    // Track temp files that will be created during compilation/execution
+    jailRuntime.trackJailTempFile(group.folder, '/tmp/dist');
+    jailRuntime.trackJailTempFile(group.folder, '/tmp/input.json');
   } catch (err) {
     log.error({ group: group.name, err }, 'Failed to create jail');
     return {
@@ -576,7 +599,7 @@ async function runJailAgent(
           `Exit Code: ${code}`,
           `Had Streaming Output: ${hadStreamingOutput}`,
         ].join('\n');
-        writeRotatingLog(logsDir, 'jail', logContent);
+        writeRotatingLog(logsDir, 'nanoclaw', logContent);
 
         if (hadStreamingOutput) {
           log.info(
@@ -657,7 +680,7 @@ async function runJailAgent(
         );
       }
 
-      writeRotatingLog(logsDir, 'jail', logLines.join('\n'));
+      writeRotatingLog(logsDir, 'nanoclaw', logLines.join('\n'));
       log.debug({ logsDir, verbose: isVerbose }, 'Jail log written');
 
       if (code !== 0) {
@@ -794,7 +817,15 @@ export async function runContainerAgent(
   if (runtime === 'jail') {
     // Jail path uses semantic mount paths, not Docker VolumeMount[]
     // Does NOT call buildVolumeMounts, buildContainerArgs, or any Docker code
-    return runJailAgent(group, input, logsDir, onProcess, onOutput, traceId, tracedLogger);
+    return runJailAgent(
+      group,
+      input,
+      logsDir,
+      onProcess,
+      onOutput,
+      traceId,
+      tracedLogger,
+    );
   }
 
   // Docker path only below this point
@@ -968,7 +999,7 @@ export async function runContainerAgent(
           `Exit Code: ${code}`,
           `Had Streaming Output: ${hadStreamingOutput}`,
         ].join('\n');
-        writeRotatingLog(logsDir, 'container', logContent);
+        writeRotatingLog(logsDir, 'nanoclaw', logContent);
 
         // Timeout after output = idle cleanup, not failure.
         // The agent already sent its response; this is just the
@@ -1055,7 +1086,7 @@ export async function runContainerAgent(
         );
       }
 
-      writeRotatingLog(logsDir, 'container', logLines.join('\n'));
+      writeRotatingLog(logsDir, 'nanoclaw', logLines.join('\n'));
       log.debug({ logsDir, verbose: isVerbose }, 'Container log written');
 
       if (code !== 0) {

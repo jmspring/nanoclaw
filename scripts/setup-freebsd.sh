@@ -518,13 +518,20 @@ ENTRYPOINT
 setup_pf() {
     print_header 7 "Packet Filter (pf) Setup"
 
-    # Detect default interface
-    DEFAULT_IF=$(route -n get default 2>/dev/null | grep 'interface:' | awk '{print $2}')
-    if [ -z "$DEFAULT_IF" ]; then
-        DEFAULT_IF="re0"
-    fi
+    # Check for NANOCLAW_EXT_IF environment variable first
+    if [ -n "${NANOCLAW_EXT_IF:-}" ]; then
+        log_info "Using NANOCLAW_EXT_IF from environment: $NANOCLAW_EXT_IF"
+        EXT_IF="$NANOCLAW_EXT_IF"
+    else
+        # Auto-detect default interface
+        DEFAULT_IF=$(route -n get default 2>/dev/null | grep 'interface:' | awk '{print $2}')
+        if [ -z "$DEFAULT_IF" ]; then
+            log_info "Could not auto-detect interface, falling back to re0"
+            DEFAULT_IF="re0"
+        fi
 
-    prompt_value "External network interface" "$DEFAULT_IF" EXT_IF
+        prompt_value "External network interface" "$DEFAULT_IF" EXT_IF
+    fi
 
     # Verify interface exists
     if ! ifconfig "$EXT_IF" >/dev/null 2>&1; then
@@ -541,8 +548,10 @@ setup_pf() {
     # Check if source exists (NanoClaw may not be cloned yet)
     if [ -f "$SRC_PF_CONF" ]; then
         log_info "Copying pf-nanoclaw.conf to /etc/..."
-        # Copy and update interface name
-        sed "s/^ext_if = \"re0\"/ext_if = \"$EXT_IF\"/" "$SRC_PF_CONF" > "$DEST_PF_CONF"
+        # Copy and update interface name (supports both old hardcoded re0 and new placeholder)
+        sed -e "s/^ext_if = \"re0\"/ext_if = \"$EXT_IF\"/" \
+            -e "s/^ext_if = \"NANOCLAW_EXT_IF_PLACEHOLDER\"/ext_if = \"$EXT_IF\"/" \
+            "$SRC_PF_CONF" > "$DEST_PF_CONF"
         log_success "pf rules installed at $DEST_PF_CONF"
     else
         log_info "Creating minimal pf-nanoclaw.conf (NanoClaw not yet cloned)..."
@@ -712,7 +721,10 @@ EOF
     SRC_PF_CONF="$NANOCLAW_SRC/etc/pf-nanoclaw.conf"
     if [ -f "$SRC_PF_CONF" ]; then
         log_info "Updating pf rules with full NanoClaw config..."
-        sed "s/^ext_if = \"re0\"/ext_if = \"$EXT_IF\"/" "$SRC_PF_CONF" > /etc/pf-nanoclaw.conf
+        # Support both old hardcoded re0 and new placeholder
+        sed -e "s/^ext_if = \"re0\"/ext_if = \"$EXT_IF\"/" \
+            -e "s/^ext_if = \"NANOCLAW_EXT_IF_PLACEHOLDER\"/ext_if = \"$EXT_IF\"/" \
+            "$SRC_PF_CONF" > /etc/pf-nanoclaw.conf
         pfctl -f /etc/pf.conf
         log_success "pf rules updated"
     fi

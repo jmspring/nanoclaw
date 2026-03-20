@@ -89,3 +89,25 @@ export const LOG_RETENTION_DAYS = parseInt(
   process.env.LOG_RETENTION_DAYS || '30',
   10,
 ); // Delete logs older than this many days
+
+// Jail runtime timeout configuration (in milliseconds)
+export const JAIL_EXEC_TIMEOUT = parseInt(
+  process.env.JAIL_EXEC_TIMEOUT || '30000',
+  10,
+); // Default timeout for sudo exec operations (30s)
+export const JAIL_CREATE_TIMEOUT = parseInt(
+  process.env.JAIL_CREATE_TIMEOUT || '30000',
+  10,
+); // Timeout for ZFS operations during jail creation (30s)
+export const JAIL_STOP_TIMEOUT = parseInt(
+  process.env.JAIL_STOP_TIMEOUT || '15000',
+  10,
+); // Timeout for graceful jail stop (15s)
+export const JAIL_FORCE_STOP_TIMEOUT = parseInt(
+  process.env.JAIL_FORCE_STOP_TIMEOUT || '10000',
+  10,
+); // Timeout for force jail stop (10s)
+export const JAIL_QUICK_OP_TIMEOUT = parseInt(
+  process.env.JAIL_QUICK_OP_TIMEOUT || '5000',
+  10,
+); // Timeout for quick operations like unmount, destroy epair (5s)

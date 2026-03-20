@@ -6,8 +6,16 @@
 import { execFile, execFileSync, spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { logger } from './logger.js';
 import pino from 'pino';
+import {
+  JAIL_EXEC_TIMEOUT,
+  JAIL_CREATE_TIMEOUT,
+  JAIL_STOP_TIMEOUT,
+  JAIL_FORCE_STOP_TIMEOUT,
+  JAIL_QUICK_OP_TIMEOUT,
+} from './config.js';
 
 /** Jail mount specification */
 export interface JailMount {
@@ -23,6 +31,11 @@ export interface JailMountPaths {
   ipcPath: string;
   claudeSessionPath: string;
   agentRunnerPath: string;
+  additionalMounts?: Array<{
+    hostPath: string;
+    jailPath: string;
+    readonly: boolean;
+  }>;
 }
 
 /** Result of jail creation with paths */
@@ -99,6 +112,18 @@ interface SudoExecOptions {
   stdio?: 'pipe' | 'ignore' | 'inherit';
 }
 
+/** Type for injectable sudo executor */
+export type SudoExecutor = (
+  args: string[],
+  options?: SudoExecOptions,
+) => Promise<SudoExecResult>;
+
+/** Type for injectable sudo executor (synchronous) */
+export type SudoExecutorSync = (
+  args: string[],
+  options?: SudoExecOptions,
+) => string;
+
 /** Jail configuration - adjust paths for your environment */
 export const JAIL_CONFIG: JailConfig = {
   templateDataset: 'zroot/nanoclaw/jails/template',
@@ -108,6 +133,8 @@ export const JAIL_CONFIG: JailConfig = {
   workspacesPath: '/home/jims/code/nanoclaw/workspaces',
   ipcPath: '/home/jims/code/nanoclaw/ipc',
   // Network mode: "inherit" (ip4=inherit) or "restricted" (vnet with epair and pf)
+  // IMPORTANT: Changing network mode requires updating pf configuration.
+  // See docs/network-mode-migration.md or run scripts/switch-network-mode.sh
   networkMode:
     (process.env.NANOCLAW_JAIL_NETWORK_MODE as 'inherit' | 'restricted') ||
     'inherit',
@@ -147,10 +174,121 @@ const MAX_CONCURRENT_JAILS = parseInt(
 const activeJails = new Set<string>();
 
 /** Path to persistent epair state file */
-const EPAIR_STATE_FILE = '/tmp/nanoclaw-epair-state.json';
+const EPAIR_STATE_FILE = '/var/run/nanoclaw/epairs.json';
 
 /** Cleanup audit logging */
 const CLEANUP_AUDIT_LOG = path.join(JAIL_CONFIG.jailsPath, 'cleanup-audit.log');
+
+/** Dependency injection context for testing */
+export interface JailRuntimeDeps {
+  sudoExec: SudoExecutor;
+  sudoExecSync: SudoExecutorSync;
+}
+
+/** Global dependency injection context (can be overridden for testing) */
+let deps: JailRuntimeDeps | null = null;
+
+/**
+ * Set dependency injection context for testing.
+ * @param newDeps - Dependency overrides
+ */
+export function setJailRuntimeDeps(newDeps: Partial<JailRuntimeDeps>): void {
+  deps = {
+    sudoExec: newDeps.sudoExec || defaultSudoExec,
+    sudoExecSync: newDeps.sudoExecSync || defaultSudoExecSync,
+  };
+}
+
+/**
+ * Reset dependency injection context to defaults.
+ */
+export function resetJailRuntimeDeps(): void {
+  deps = null;
+}
+
+/**
+ * Get the current sudo executor (for testing).
+ */
+function getSudoExec(): SudoExecutor {
+  return deps?.sudoExec || defaultSudoExec;
+}
+
+/**
+ * Get the current sync sudo executor (for testing).
+ */
+function getSudoExecSync(): SudoExecutorSync {
+  return deps?.sudoExecSync || defaultSudoExecSync;
+}
+
+/** Track temporary files/directories created during session */
+const sessionTempFiles = new Set<string>();
+
+/** Track per-jail temp directories that need cleanup */
+const jailTempDirs = new Map<string, Set<string>>(); // groupId -> Set of temp paths
+
+/** Epair lock directory path */
+const EPAIR_LOCK_DIR = '/tmp/nanoclaw-epair.lock';
+
+/**
+ * Track temp files created during a jail session for later cleanup.
+ * @param groupId - The group identifier
+ * @param tempPath - The path inside the jail's /tmp directory (e.g., '/tmp/dist', '/tmp/input.json')
+ */
+export function trackJailTempFile(groupId: string, tempPath: string): void {
+  if (!jailTempDirs.has(groupId)) {
+    jailTempDirs.set(groupId, new Set());
+  }
+  jailTempDirs.get(groupId)!.add(tempPath);
+  logger.debug({ groupId, tempPath }, 'Tracking jail temp file');
+}
+
+/**
+ * Clean up tracked temp files for a jail session.
+ * Removes /tmp/dist, /tmp/input.json, and other tracked temp files.
+ * @param groupId - The group identifier
+ */
+async function cleanupJailTempFiles(groupId: string): Promise<void> {
+  const jailName = getJailName(groupId);
+  let tempPaths = jailTempDirs.get(groupId);
+
+  if (!tempPaths || tempPaths.size === 0) {
+    // Always try to clean up common temp files even if not tracked
+    tempPaths = new Set(['/tmp/dist', '/tmp/input.json']);
+  }
+
+  if (!isJailRunning(jailName)) {
+    logger.debug(
+      { groupId, jailName },
+      'Jail not running, skipping temp file cleanup',
+    );
+    jailTempDirs.delete(groupId);
+    return;
+  }
+
+  logger.info(
+    { groupId, jailName, count: tempPaths.size },
+    'Cleaning up jail temp files',
+  );
+
+  for (const tempPath of tempPaths) {
+    try {
+      // Use rm -rf to remove both files and directories
+      await getSudoExec()(['jexec', jailName, 'rm', '-rf', tempPath], {
+        timeout: 5000,
+      });
+      logger.debug({ groupId, tempPath }, 'Removed jail temp file');
+    } catch (error) {
+      // File may not exist or already cleaned up - this is fine
+      logger.debug(
+        { groupId, tempPath, err: error },
+        'Could not remove jail temp file (may not exist)',
+      );
+    }
+  }
+
+  // Clear tracking for this jail
+  jailTempDirs.delete(groupId);
+}
 
 function logCleanupAudit(
   action: string,
@@ -214,9 +352,72 @@ async function retryWithBackoff<T>(
   throw lastError;
 }
 
-/** Sanitize groupId for use in jail names (alphanumeric + underscore only) */
+/**
+ * Sanitize groupId for use in jail names (alphanumeric + underscore only).
+ * Appends a 6-character hash suffix to prevent collisions when different
+ * groupIds sanitize to the same value (e.g., "my-group" and "my_group").
+ * @param groupId - The original group identifier
+ * @returns Sanitized jail name with hash suffix
+ */
 export function sanitizeJailName(groupId: string): string {
-  return groupId.replace(/[^a-zA-Z0-9_]/g, '_');
+  // Replace non-alphanumeric characters (except underscore) with underscore
+  const sanitized = groupId.replace(/[^a-zA-Z0-9_]/g, '_');
+
+  // Generate a short hash of the original groupId for uniqueness
+  // Use first 6 chars of SHA-256 hash (base36 for compact representation)
+  const hash = crypto
+    .createHash('sha256')
+    .update(groupId)
+    .digest('hex')
+    .slice(0, 6);
+
+  // Log warning if sanitization changed the name significantly
+  if (sanitized !== groupId) {
+    logger.debug(
+      { original: groupId, sanitized, hash },
+      'Group name sanitized for jail compatibility',
+    );
+  }
+
+  // Append hash to ensure uniqueness while keeping jail name readable
+  // Format: sanitized_hash (e.g., "my_group_a1b2c3")
+  return `${sanitized}_${hash}`;
+}
+
+/**
+ * Detect potential collision between group names.
+ * Warns if two group IDs would have collided without hash suffix.
+ * @param groupId1 - First group identifier
+ * @param groupId2 - Second group identifier
+ * @returns True if the sanitized names (without hash) would collide
+ */
+export function detectNameCollision(
+  groupId1: string,
+  groupId2: string,
+): boolean {
+  if (groupId1 === groupId2) {
+    return false; // Same group, not a collision
+  }
+
+  const sanitized1 = groupId1.replace(/[^a-zA-Z0-9_]/g, '_');
+  const sanitized2 = groupId2.replace(/[^a-zA-Z0-9_]/g, '_');
+
+  const wouldCollide = sanitized1 === sanitized2;
+
+  if (wouldCollide) {
+    logger.warn(
+      {
+        group1: groupId1,
+        group2: groupId2,
+        sanitizedBase: sanitized1,
+        jail1: getJailName(groupId1),
+        jail2: getJailName(groupId2),
+      },
+      'Potential group name collision detected (prevented by hash suffix)',
+    );
+  }
+
+  return wouldCollide;
 }
 
 /** Generate jail name from groupId */
@@ -245,6 +446,7 @@ function getFstabPath(jailName: string): string {
  */
 async function applyRctlLimits(jailName: string): Promise<void> {
   const limits = JAIL_CONFIG.resourceLimits;
+  const sudoExec = getSudoExec();
 
   try {
     // Add memory limit
@@ -277,6 +479,7 @@ async function applyRctlLimits(jailName: string): Promise<void> {
  * @param jailName - The jail name
  */
 async function removeRctlLimits(jailName: string): Promise<void> {
+  const sudoExec = getSudoExec();
   try {
     // Remove all rctl rules for this jail
     await sudoExec(['rctl', '-r', `jail:${jailName}`]);
@@ -290,13 +493,13 @@ async function removeRctlLimits(jailName: string): Promise<void> {
   }
 }
 
-/** Execute a command with sudo, returning a promise */
-function sudoExec(
+/** Default implementation: Execute a command with sudo, returning a promise */
+function defaultSudoExec(
   args: string[],
   options: SudoExecOptions = {},
 ): Promise<SudoExecResult> {
   return new Promise((resolve, reject) => {
-    const timeout = options.timeout || 30000;
+    const timeout = options.timeout || JAIL_EXEC_TIMEOUT;
     execFile('sudo', args, { timeout, ...options }, (error, stdout, stderr) => {
       if (error) {
         reject(
@@ -311,12 +514,12 @@ function sudoExec(
   });
 }
 
-/** Execute a command with sudo synchronously */
-function sudoExecSync(args: string[], options: SudoExecOptions = {}): string {
+/** Default implementation: Execute a command with sudo synchronously */
+function defaultSudoExecSync(args: string[], options: SudoExecOptions = {}): string {
   try {
     return execFileSync('sudo', args, {
       encoding: 'utf-8',
-      timeout: 30000,
+      timeout: JAIL_EXEC_TIMEOUT,
       ...options,
     });
   } catch (error) {
@@ -332,6 +535,11 @@ function sudoExecSync(args: string[], options: SudoExecOptions = {}): string {
  */
 function persistEpairState(): void {
   try {
+    const stateDir = path.dirname(EPAIR_STATE_FILE);
+    // Ensure directory exists
+    if (!fs.existsSync(stateDir)) {
+      fs.mkdirSync(stateDir, { recursive: true, mode: 0o755 });
+    }
     const state = Object.fromEntries(assignedEpairs);
     fs.writeFileSync(EPAIR_STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
   } catch (error) {
@@ -413,21 +621,24 @@ function restoreEpairState(): void {
  * @returns Unlock function to release the lock
  */
 async function acquireEpairLock(): Promise<() => void> {
-  const lockDir = '/tmp/nanoclaw-epair.lock';
   const maxRetries = 100;
   const retryDelay = 50; // milliseconds
 
   for (let i = 0; i < maxRetries; i++) {
     try {
       // Atomic operation: mkdir fails if directory exists
-      fs.mkdirSync(lockDir, { mode: 0o755 });
+      fs.mkdirSync(EPAIR_LOCK_DIR, { mode: 0o755 });
+
+      // Track this temp directory for cleanup
+      sessionTempFiles.add(EPAIR_LOCK_DIR);
 
       // Lock acquired - return unlock function
       return () => {
         try {
-          fs.rmdirSync(lockDir);
+          fs.rmdirSync(EPAIR_LOCK_DIR);
+          sessionTempFiles.delete(EPAIR_LOCK_DIR);
         } catch (err) {
-          logger.warn({ err, lockDir }, 'Failed to release epair lock');
+          logger.warn({ err, lockDir: EPAIR_LOCK_DIR }, 'Failed to release epair lock');
         }
       };
     } catch (err) {
@@ -451,6 +662,7 @@ async function acquireEpairLock(): Promise<() => void> {
 async function createEpair(groupId: string): Promise<EpairInfo> {
   // Acquire exclusive lock to prevent concurrent epair creation
   const unlock = await acquireEpairLock();
+  const sudoExec = getSudoExec();
 
   try {
     // Check epair pool capacity before creating
@@ -529,6 +741,7 @@ async function configureJailNetwork(
   jailName: string,
   epairInfo: EpairInfo,
 ): Promise<void> {
+  const sudoExec = getSudoExec();
   // Configure the jail's interface with its unique IP
   await sudoExec([
     'jexec',
@@ -565,6 +778,7 @@ async function configureJailNetwork(
  * @param epairNum - The epair number
  */
 async function destroyEpair(epairNum: number): Promise<void> {
+  const sudoExec = getSudoExec();
   const hostIface = `epair${epairNum}a`;
   try {
     // Destroying the 'a' side destroys both sides
@@ -594,6 +808,7 @@ async function releaseEpair(groupId: string): Promise<void> {
  * @param jailPath - Path to the jail root
  */
 async function setupJailResolv(jailPath: string): Promise<void> {
+  const sudoExec = getSudoExec();
   const resolvPath = path.join(jailPath, 'etc', 'resolv.conf');
 
   try {
@@ -614,6 +829,7 @@ async function setupJailResolv(jailPath: string): Promise<void> {
 
 /** Check if a jail exists and is running */
 export function isJailRunning(jailName: string): boolean {
+  const sudoExecSync = getSudoExecSync();
   try {
     const output = sudoExecSync(['jls', '-j', jailName, 'jid'], {
       stdio: 'pipe',
@@ -651,6 +867,73 @@ export const JAIL_MOUNT_LAYOUT = {
  * @param paths - Semantic mount paths
  * @returns Array of mount specifications
  */
+/**
+ * Validate jail mount paths for security issues.
+ * Defense-in-depth: validates even if upstream validation should have occurred.
+ * @param mount - The mount to validate
+ * @throws Error if mount is unsafe
+ */
+function validateJailMount(mount: JailMount): void {
+  // Validate hostPath - must be absolute and cannot contain path traversal
+  if (!path.isAbsolute(mount.hostPath)) {
+    throw new Error(
+      `Security: jail mount hostPath must be absolute: "${mount.hostPath}"`,
+    );
+  }
+
+  // Check for path traversal in hostPath
+  const normalizedHostPath = path.normalize(mount.hostPath);
+  if (normalizedHostPath.includes('..')) {
+    throw new Error(
+      `Security: jail mount hostPath contains path traversal: "${mount.hostPath}"`,
+    );
+  }
+
+  // Resolve symlinks in hostPath to prevent escape via symlink
+  try {
+    const realHostPath = fs.realpathSync(mount.hostPath);
+    // Update mount to use real path
+    mount.hostPath = realHostPath;
+  } catch (err) {
+    throw new Error(
+      `Security: jail mount hostPath does not exist: "${mount.hostPath}"`,
+    );
+  }
+
+  // Validate jailPath - must be absolute and cannot contain path traversal
+  if (!path.isAbsolute(mount.jailPath)) {
+    throw new Error(
+      `Security: jail mount jailPath must be absolute: "${mount.jailPath}"`,
+    );
+  }
+
+  const normalizedJailPath = path.normalize(mount.jailPath);
+  if (normalizedJailPath.includes('..')) {
+    throw new Error(
+      `Security: jail mount jailPath contains path traversal: "${mount.jailPath}"`,
+    );
+  }
+
+  // Blocked paths - never allow mounting these (even if they pass allowlist)
+  const blockedPathPatterns = [
+    '/.ssh',
+    '/.gnupg',
+    '/.aws',
+    '/.docker',
+    '/etc/passwd',
+    '/etc/shadow',
+    '/root',
+  ];
+
+  for (const pattern of blockedPathPatterns) {
+    if (mount.hostPath.includes(pattern)) {
+      throw new Error(
+        `Security: jail mount hostPath matches blocked pattern "${pattern}": "${mount.hostPath}"`,
+      );
+    }
+  }
+}
+
 export function buildJailMounts(paths: JailMountPaths): JailMount[] {
   const mounts: JailMount[] = [];
 
@@ -692,6 +975,25 @@ export function buildJailMounts(paths: JailMountPaths): JailMount[] {
       jailPath: JAIL_MOUNT_LAYOUT.agentRunner,
       readonly: true,
     });
+  }
+
+  // Additional mounts - MUST be validated for security
+  // Defense-in-depth: validate even if buildJailMountPaths already validated
+  if (paths.additionalMounts) {
+    for (const mount of paths.additionalMounts) {
+      // Create a JailMount to validate
+      const jailMount: JailMount = {
+        hostPath: mount.hostPath,
+        jailPath: mount.jailPath,
+        readonly: mount.readonly,
+      };
+
+      // Validate for security issues (path traversal, symlinks, blocked paths)
+      validateJailMount(jailMount);
+
+      // Add validated mount (hostPath may have been updated to realpath)
+      mounts.push(jailMount);
+    }
   }
 
   return mounts;
@@ -765,6 +1067,7 @@ async function createMountPoints(
   mounts: JailMount[],
   jailPath: string,
 ): Promise<void> {
+  const sudoExec = getSudoExec();
   const resolvedJailRoot = path.resolve(jailPath);
 
   for (const mount of mounts) {
@@ -792,6 +1095,7 @@ async function mountNullfs(
   mounts: JailMount[],
   jailPath: string,
 ): Promise<void> {
+  const sudoExec = getSudoExec();
   const resolvedJailRoot = path.resolve(jailPath);
 
   for (const mount of mounts) {
@@ -833,6 +1137,7 @@ async function unmountAll(
   mounts: JailMount[],
   jailPath: string,
 ): Promise<void> {
+  const sudoExec = getSudoExec();
   const errors: string[] = [];
   // Unmount in reverse order
   for (let i = mounts.length - 1; i >= 0; i--) {
@@ -901,6 +1206,7 @@ export async function createJail(
   traceId?: string,
   tracedLogger?: pino.Logger,
 ): Promise<string> {
+  const sudoExec = getSudoExec();
   const log = tracedLogger || logger;
   const jailName = getJailName(groupId);
   const dataset = getJailDataset(jailName);
@@ -930,10 +1236,7 @@ export async function createJail(
     try {
       await sudoExec(['zfs', 'destroy', '-r', dataset]);
     } catch (error) {
-      log.warn(
-        { dataset, err: error },
-        'Could not destroy existing dataset',
-      );
+      log.warn({ dataset, err: error }, 'Could not destroy existing dataset');
     }
   }
 
@@ -1124,7 +1427,7 @@ export async function execInJail(
         // Kill all processes in the jail - this ensures the jailed process dies
         execFileSync('sudo', ['jexec', jailName, 'kill', '-9', '-1'], {
           stdio: 'pipe',
-          timeout: 5000,
+          timeout: JAIL_QUICK_OP_TIMEOUT,
         });
       } catch {
         // Jail may have already stopped or no processes to kill
@@ -1260,6 +1563,7 @@ export function spawnInJail(
  * @param groupId - The group identifier
  */
 export async function stopJail(groupId: string): Promise<void> {
+  const sudoExec = getSudoExec();
   const jailName = getJailName(groupId);
 
   if (!isJailRunning(jailName)) {
@@ -1270,7 +1574,7 @@ export async function stopJail(groupId: string): Promise<void> {
   logger.info({ jailName, groupId }, 'Stopping jail');
 
   try {
-    await sudoExec(['jail', '-r', jailName], { timeout: 15000 });
+    await sudoExec(['jail', '-r', jailName], { timeout: JAIL_STOP_TIMEOUT });
     logger.info({ jailName, groupId }, 'Jail stopped');
   } catch (error) {
     logger.warn(
@@ -1280,9 +1584,11 @@ export async function stopJail(groupId: string): Promise<void> {
     try {
       // Try to kill all processes in jail first
       await sudoExec(['jexec', jailName, 'kill', '-9', '-1'], {
-        timeout: 5000,
+        timeout: JAIL_QUICK_OP_TIMEOUT,
       }).catch(() => {});
-      await sudoExec(['jail', '-r', jailName], { timeout: 10000 });
+      await sudoExec(['jail', '-r', jailName], {
+        timeout: JAIL_FORCE_STOP_TIMEOUT,
+      });
       logger.info({ jailName, groupId }, 'Jail force stopped');
     } catch (forceError) {
       logger.error(
@@ -1310,6 +1616,7 @@ async function forceCleanup(
   jailPath: string,
   epairNum: number | null = null,
 ): Promise<void> {
+  const sudoExec = getSudoExec();
   logger.info({ jailName }, 'Starting force cleanup');
   logCleanupAudit('FORCE_CLEANUP_START', jailName, 'INFO');
 
@@ -1319,7 +1626,7 @@ async function forceCleanup(
   if (isJailRunning(jailName)) {
     try {
       await sudoExec(['jexec', jailName, 'kill', '-9', '-1'], {
-        timeout: 5000,
+        timeout: JAIL_QUICK_OP_TIMEOUT,
       });
       logger.info({ jailName }, 'Killed all processes in jail');
       logCleanupAudit('KILL_PROCESSES', jailName, 'SUCCESS');
@@ -1331,7 +1638,9 @@ async function forceCleanup(
 
     // 2. Force stop jail
     try {
-      await sudoExec(['jail', '-r', jailName], { timeout: 10000 });
+      await sudoExec(['jail', '-r', jailName], {
+        timeout: JAIL_FORCE_STOP_TIMEOUT,
+      });
       logger.info({ jailName }, 'Force stopped jail');
       logCleanupAudit('FORCE_STOP_JAIL', jailName, 'SUCCESS');
     } catch (error) {
@@ -1344,7 +1653,7 @@ async function forceCleanup(
   // 3. Force unmount devfs
   try {
     await sudoExec(['umount', '-f', path.join(jailPath, 'dev')], {
-      timeout: 5000,
+      timeout: JAIL_QUICK_OP_TIMEOUT,
     });
     logger.debug({ jailName }, 'Force unmounted devfs');
     logCleanupAudit('FORCE_UNMOUNT_DEVFS', jailName, 'SUCCESS');
@@ -1361,7 +1670,9 @@ async function forceCleanup(
     const mount = mounts[i];
     const targetPath = path.join(jailPath, mount.jailPath);
     try {
-      await sudoExec(['umount', '-f', targetPath], { timeout: 5000 });
+      await sudoExec(['umount', '-f', targetPath], {
+        timeout: JAIL_QUICK_OP_TIMEOUT,
+      });
       logger.debug({ targetPath }, 'Force unmounted nullfs');
       logCleanupAudit('FORCE_UNMOUNT_NULLFS', jailName, 'SUCCESS', null);
     } catch (error) {
@@ -1375,7 +1686,7 @@ async function forceCleanup(
   if (datasetExists(dataset)) {
     try {
       await sudoExec(['zfs', 'destroy', '-f', '-r', dataset], {
-        timeout: 30000,
+        timeout: JAIL_CREATE_TIMEOUT,
       });
       logger.info({ dataset }, 'Force destroyed dataset');
       logCleanupAudit('FORCE_DESTROY_DATASET', jailName, 'SUCCESS');
@@ -1390,7 +1701,9 @@ async function forceCleanup(
   if (epairNum !== null) {
     try {
       const hostIface = `epair${epairNum}a`;
-      await sudoExec(['ifconfig', hostIface, 'destroy'], { timeout: 5000 });
+      await sudoExec(['ifconfig', hostIface, 'destroy'], {
+        timeout: JAIL_QUICK_OP_TIMEOUT,
+      });
       logger.info({ epairNum, hostIface }, 'Force destroyed epair');
       logCleanupAudit('FORCE_DESTROY_EPAIR', jailName, 'SUCCESS');
     } catch (error) {
@@ -1430,6 +1743,7 @@ export async function cleanupJail(
   groupId: string,
   mounts: JailMount[] = [],
 ): Promise<void> {
+  const sudoExec = getSudoExec();
   const jailName = getJailName(groupId);
   const dataset = getJailDataset(jailName);
   const jailPath = getJailPath(jailName);
@@ -1443,6 +1757,19 @@ export async function cleanupJail(
     JAIL_CONFIG.networkMode === 'restricted' && assignedEpairs.has(groupId)
       ? assignedEpairs.get(groupId)
       : null;
+
+  // Clean up temp files inside jail before stopping
+  try {
+    await cleanupJailTempFiles(groupId);
+    logCleanupAudit('CLEANUP_TEMP_FILES', jailName, 'SUCCESS');
+  } catch (error) {
+    logger.warn(
+      { jailName, groupId, err: error },
+      'Could not clean up temp files',
+    );
+    logCleanupAudit('CLEANUP_TEMP_FILES', jailName, 'FAILED', error);
+    // Don't add to errors - temp file cleanup is best-effort
+  }
 
   // Remove rctl limits before stopping jail
   await removeRctlLimits(jailName);
@@ -1668,21 +1995,95 @@ export function isAtJailCapacity(): boolean {
   return activeJails.size >= MAX_CONCURRENT_JAILS;
 }
 
+/**
+ * Validate that pf configuration matches the current network mode.
+ * In 'restricted' mode, pf must be enabled and have NAT/filter rules for jail network.
+ * In 'inherit' mode, pf configuration is optional.
+ * @throws Error if validation fails
+ */
+export function validatePfConfiguration(): void {
+  if (JAIL_CONFIG.networkMode !== 'restricted') {
+    // In 'inherit' mode, pf is not required
+    return;
+  }
+
+  // In 'restricted' mode, we need pf enabled with proper rules
+  try {
+    // Check if pf is enabled
+    const pfInfo = execFileSync('sudo', ['pfctl', '-s', 'info'], {
+      stdio: 'pipe',
+      timeout: 5000,
+      encoding: 'utf-8',
+    });
+
+    if (!pfInfo.includes('Status: Enabled')) {
+      throw new Error(
+        'NETWORK MODE MISMATCH: Network mode is "restricted" but pf is not enabled.\n' +
+          'To fix this issue:\n' +
+          '  1. Run the migration script: scripts/switch-network-mode.sh restricted\n' +
+          '  2. Or manually enable pf: sudo pfctl -e\n' +
+          '  3. Or switch to "inherit" mode: export NANOCLAW_JAIL_NETWORK_MODE=inherit',
+      );
+    }
+
+    // Check for NAT rules for jail network (10.99.0.0/24)
+    const natRules = execFileSync('sudo', ['pfctl', '-s', 'nat'], {
+      stdio: 'pipe',
+      timeout: 5000,
+      encoding: 'utf-8',
+    });
+
+    if (!natRules.includes('10.99.0.0/24')) {
+      throw new Error(
+        'NETWORK MODE MISMATCH: Network mode is "restricted" but pf NAT rules for jail network not found.\n' +
+          'To fix this issue:\n' +
+          '  1. Run the migration script: scripts/switch-network-mode.sh restricted\n' +
+          '  2. Or manually load pf config: sudo pfctl -f etc/pf-nanoclaw.conf\n' +
+          '  3. Or switch to "inherit" mode: export NANOCLAW_JAIL_NETWORK_MODE=inherit',
+      );
+    }
+
+    logger.info('PF configuration validated for restricted network mode');
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('NETWORK MODE MISMATCH')) {
+      // Re-throw our validation errors as-is
+      logger.fatal({ err }, 'PF configuration validation failed');
+      throw err;
+    }
+
+    // pfctl command failed - pf may not be available or not configured
+    logger.fatal(
+      { err },
+      'FATAL: Cannot validate pf configuration. Ensure pf is installed and configured.',
+    );
+    throw new Error(
+      'NETWORK MODE MISMATCH: Network mode is "restricted" but pf validation failed.\n' +
+        'To fix this issue:\n' +
+        '  1. Run the migration script: scripts/switch-network-mode.sh restricted\n' +
+        '  2. Or manually configure pf (see etc/pf-nanoclaw.conf)\n' +
+        '  3. Or switch to "inherit" mode: export NANOCLAW_JAIL_NETWORK_MODE=inherit',
+    );
+  }
+}
+
 /** Ensure the jail subsystem is available. */
 export function ensureJailRuntimeRunning(): void {
   try {
     // Check ZFS is available
-    execFileSync('zfs', ['version'], { stdio: 'pipe', timeout: 5000 });
+    execFileSync('zfs', ['version'], { stdio: 'pipe', timeout: JAIL_QUICK_OP_TIMEOUT });
 
     // Check template snapshot exists
     const snapshot = `${JAIL_CONFIG.templateDataset}@${JAIL_CONFIG.templateSnapshot}`;
     execFileSync('zfs', ['list', '-t', 'snapshot', '-H', snapshot], {
       stdio: 'pipe',
-      timeout: 5000,
+      timeout: JAIL_QUICK_OP_TIMEOUT,
     });
 
     // Check jail command is available
-    execFileSync('which', ['jail'], { stdio: 'pipe', timeout: 5000 });
+    execFileSync('which', ['jail'], { stdio: 'pipe', timeout: JAIL_QUICK_OP_TIMEOUT });
+
+    // Validate pf configuration matches network mode
+    validatePfConfiguration();
 
     // Restore epair state from disk for crash recovery
     if (JAIL_CONFIG.networkMode === 'restricted') {
@@ -1703,8 +2104,59 @@ export function ensureJailRuntimeRunning(): void {
   }
 }
 
+/**
+ * Clean up orphaned temp files in all running NanoClaw jails.
+ * Removes common temp directories like /tmp/dist and /tmp/input.json.
+ */
+function cleanupOrphanedTempFiles(): void {
+  try {
+    // List all running jails with nanoclaw_ prefix
+    const output = execFileSync('sudo', ['jls', '-N', 'name'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      encoding: 'utf-8',
+    });
+
+    const jailNames = output
+      .trim()
+      .split('\n')
+      .filter((line) => line.startsWith('nanoclaw_'));
+
+    if (jailNames.length === 0) {
+      return;
+    }
+
+    logger.info(
+      { count: jailNames.length },
+      'Cleaning orphaned temp files from running jails',
+    );
+
+    for (const jailName of jailNames) {
+      // Clean up common temp files from previous sessions
+      const tempPaths = ['/tmp/dist', '/tmp/input.json'];
+      for (const tempPath of tempPaths) {
+        try {
+          execFileSync('sudo', ['jexec', jailName, 'rm', '-rf', tempPath], {
+            stdio: 'pipe',
+            timeout: 5000,
+          });
+          logger.debug({ jailName, tempPath }, 'Removed orphaned temp file');
+        } catch {
+          // File may not exist - this is fine
+        }
+      }
+    }
+
+    logger.info('Completed orphaned temp file cleanup');
+  } catch (err) {
+    logger.debug({ err }, 'No running jails found for temp file cleanup');
+  }
+}
+
 /** Kill orphaned NanoClaw jails from previous runs. */
 export function cleanupOrphans(): void {
+  // First, clean up temp files in any running jails
+  cleanupOrphanedTempFiles();
+
   try {
     // List all running jails with nanoclaw_ prefix
     const output = execFileSync('sudo', ['jls', '-N', 'name'], {
@@ -1722,7 +2174,7 @@ export function cleanupOrphans(): void {
       try {
         execFileSync('sudo', ['rctl', '-r', `jail:${jailName}`], {
           stdio: 'pipe',
-          timeout: 5000,
+          timeout: JAIL_QUICK_OP_TIMEOUT,
         });
         logger.info({ jailName }, 'Removed rctl limits for orphaned jail');
       } catch {
@@ -1733,7 +2185,7 @@ export function cleanupOrphans(): void {
         logger.info({ jailName }, 'Stopping orphaned jail');
         execFileSync('sudo', ['jail', '-r', jailName], {
           stdio: 'pipe',
-          timeout: 15000,
+          timeout: JAIL_STOP_TIMEOUT,
         });
         logger.info({ jailName }, 'Stopped orphaned jail');
       } catch {
@@ -1765,7 +2217,7 @@ export function cleanupOrphans(): void {
           try {
             execFileSync('sudo', ['umount', '-f', mountPoint], {
               stdio: 'pipe',
-              timeout: 5000,
+              timeout: JAIL_QUICK_OP_TIMEOUT,
             });
             logger.debug({ mountPoint }, 'Unmounted orphan mount');
           } catch {
@@ -1782,7 +2234,7 @@ export function cleanupOrphans(): void {
         try {
           execFileSync('sudo', ['zfs', 'destroy', '-r', dataset], {
             stdio: 'pipe',
-            timeout: 15000,
+            timeout: JAIL_STOP_TIMEOUT,
           });
           logger.info({ dataset }, 'Destroyed orphan dataset');
         } catch {
@@ -1828,7 +2280,7 @@ export function cleanupOrphans(): void {
               try {
                 execFileSync('sudo', ['ifconfig', iface, 'destroy'], {
                   stdio: 'pipe',
-                  timeout: 5000,
+                  timeout: JAIL_QUICK_OP_TIMEOUT,
                 });
                 logger.info({ epairNum, iface }, 'Destroyed orphan epair');
               } catch {
@@ -1862,6 +2314,7 @@ export function cleanupOrphans(): void {
  * @returns Promise<void>
  */
 export async function cleanupAllJails(): Promise<void> {
+  const sudoExec = getSudoExec();
   logger.info('Cleaning up all NanoClaw jails');
 
   let jailNames: string[] = [];
@@ -1897,7 +2350,9 @@ export async function cleanupAllJails(): Promise<void> {
 
     // Step 0: Remove rctl limits
     try {
-      await sudoExec(['rctl', '-r', `jail:${jailName}`], { timeout: 5000 });
+      await sudoExec(['rctl', '-r', `jail:${jailName}`], {
+        timeout: JAIL_QUICK_OP_TIMEOUT,
+      });
       logger.debug({ jailName }, 'Removed rctl limits');
     } catch (err) {
       logger.warn(
@@ -1909,7 +2364,7 @@ export async function cleanupAllJails(): Promise<void> {
     // Step 1: Stop the jail
     try {
       logger.info({ jailName }, 'Stopping jail');
-      await sudoExec(['jail', '-r', jailName], { timeout: 15000 });
+      await sudoExec(['jail', '-r', jailName], { timeout: JAIL_STOP_TIMEOUT });
       logger.info({ jailName }, 'Stopped jail');
     } catch (err) {
       logger.warn({ jailName, err }, 'Failed to stop jail, continuing cleanup');
@@ -1918,7 +2373,7 @@ export async function cleanupAllJails(): Promise<void> {
     // Step 2: Unmount devfs
     try {
       await sudoExec(['umount', '-f', path.join(jailPath, 'dev')], {
-        timeout: 5000,
+        timeout: JAIL_QUICK_OP_TIMEOUT,
       });
       logger.debug({ jailName }, 'Unmounted devfs');
     } catch (err) {
@@ -1943,7 +2398,9 @@ export async function cleanupAllJails(): Promise<void> {
 
       for (const mountPoint of jailMounts) {
         try {
-          await sudoExec(['umount', '-f', mountPoint], { timeout: 5000 });
+          await sudoExec(['umount', '-f', mountPoint], {
+            timeout: JAIL_QUICK_OP_TIMEOUT,
+          });
           logger.debug({ mountPoint }, 'Unmounted nullfs');
         } catch (err) {
           logger.warn(
@@ -1959,7 +2416,9 @@ export async function cleanupAllJails(): Promise<void> {
     // Step 4: Destroy ZFS dataset
     if (datasetExists(dataset)) {
       try {
-        await sudoExec(['zfs', 'destroy', '-r', dataset], { timeout: 30000 });
+        await sudoExec(['zfs', 'destroy', '-r', dataset], {
+          timeout: JAIL_CREATE_TIMEOUT,
+        });
         logger.info({ dataset }, 'Destroyed ZFS dataset');
       } catch (err) {
         logger.warn(
@@ -2011,11 +2470,58 @@ export async function cleanupAllJails(): Promise<void> {
       logger.warn({ err }, 'Failed to clean up epair interfaces');
     }
 
-    // Clear the in-memory epair assignments
+    // Clear the in-memory epair assignments and persist to disk
     assignedEpairs.clear();
+    persistEpairState();
   }
 
   logger.info('Finished cleaning up all NanoClaw jails');
+
+  // Clean up host-side temp files
+  cleanupHostTempFiles();
+}
+
+/**
+ * Clean up host-side temporary files created during sessions.
+ * Removes epair lock directory and clears session tracking.
+ */
+function cleanupHostTempFiles(): void {
+  logger.info('Cleaning up host-side temp files');
+
+  // Clean up epair lock directory if it exists
+  if (fs.existsSync(EPAIR_LOCK_DIR)) {
+    try {
+      fs.rmdirSync(EPAIR_LOCK_DIR);
+      logger.debug({ lockDir: EPAIR_LOCK_DIR }, 'Removed epair lock directory');
+    } catch (err) {
+      logger.debug(
+        { err, lockDir: EPAIR_LOCK_DIR },
+        'Could not remove epair lock directory',
+      );
+    }
+  }
+
+  // Clean up all tracked session temp files
+  for (const tempFile of sessionTempFiles) {
+    try {
+      if (fs.existsSync(tempFile)) {
+        if (fs.statSync(tempFile).isDirectory()) {
+          fs.rmdirSync(tempFile);
+        } else {
+          fs.unlinkSync(tempFile);
+        }
+        logger.debug({ tempFile }, 'Removed session temp file');
+      }
+    } catch (err) {
+      logger.debug({ err, tempFile }, 'Could not remove session temp file');
+    }
+  }
+
+  // Clear tracking
+  sessionTempFiles.clear();
+  jailTempDirs.clear();
+
+  logger.debug('Completed host-side temp file cleanup');
 }
 
 /**
@@ -2032,4 +2538,37 @@ export function getEpairMetrics(): {
     max: MAX_EPAIRS,
     warningThreshold: EPAIR_WARNING_THRESHOLD,
   };
+}
+
+/**
+ * List all running NanoClaw jails.
+ * @returns Array of jail names
+ */
+export function listRunningNanoclawJails(): string[] {
+  try {
+    const output = execFileSync('sudo', ['jls', '-N', 'name'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      encoding: 'utf-8',
+    });
+
+    return output
+      .trim()
+      .split('\n')
+      .filter((line) => line.startsWith('nanoclaw_'));
+  } catch (err) {
+    logger.debug({ err }, 'No running jails found or jls failed');
+    return [];
+  }
+}
+
+/**
+ * Track a jail as active so it won't be cleaned up as an orphan.
+ * Called during startup to reconnect to existing jails.
+ * @param jailName - The jail name
+ */
+export function trackActiveJail(jailName: string): void {
+  // Extract groupId from jail name (nanoclaw_<groupId>)
+  const groupId = jailName.replace(/^nanoclaw_/, '');
+  activeJails.add(groupId);
+  logger.debug({ jailName, groupId }, 'Tracked active jail');
 }
