@@ -147,7 +147,7 @@ const MAX_CONCURRENT_JAILS = parseInt(
 const activeJails = new Set<string>();
 
 /** Path to persistent epair state file */
-const EPAIR_STATE_FILE = '/tmp/nanoclaw-epair-state.json';
+const EPAIR_STATE_FILE = '/var/run/nanoclaw/epairs.json';
 
 /** Cleanup audit logging */
 const CLEANUP_AUDIT_LOG = path.join(JAIL_CONFIG.jailsPath, 'cleanup-audit.log');
@@ -332,6 +332,11 @@ function sudoExecSync(args: string[], options: SudoExecOptions = {}): string {
  */
 function persistEpairState(): void {
   try {
+    const stateDir = path.dirname(EPAIR_STATE_FILE);
+    // Ensure directory exists
+    if (!fs.existsSync(stateDir)) {
+      fs.mkdirSync(stateDir, { recursive: true, mode: 0o755 });
+    }
     const state = Object.fromEntries(assignedEpairs);
     fs.writeFileSync(EPAIR_STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
   } catch (error) {
@@ -2011,8 +2016,9 @@ export async function cleanupAllJails(): Promise<void> {
       logger.warn({ err }, 'Failed to clean up epair interfaces');
     }
 
-    // Clear the in-memory epair assignments
+    // Clear the in-memory epair assignments and persist to disk
     assignedEpairs.clear();
+    persistEpairState();
   }
 
   logger.info('Finished cleaning up all NanoClaw jails');
