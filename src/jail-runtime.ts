@@ -106,6 +106,18 @@ interface SudoExecOptions {
   stdio?: 'pipe' | 'ignore' | 'inherit';
 }
 
+/** Type for injectable sudo executor */
+export type SudoExecutor = (
+  args: string[],
+  options?: SudoExecOptions,
+) => Promise<SudoExecResult>;
+
+/** Type for injectable sudo executor (synchronous) */
+export type SudoExecutorSync = (
+  args: string[],
+  options?: SudoExecOptions,
+) => string;
+
 /** Jail configuration - adjust paths for your environment */
 export const JAIL_CONFIG: JailConfig = {
   templateDataset: 'zroot/nanoclaw/jails/template',
@@ -158,6 +170,47 @@ const EPAIR_STATE_FILE = '/var/run/nanoclaw/epairs.json';
 
 /** Cleanup audit logging */
 const CLEANUP_AUDIT_LOG = path.join(JAIL_CONFIG.jailsPath, 'cleanup-audit.log');
+
+/** Dependency injection context for testing */
+export interface JailRuntimeDeps {
+  sudoExec: SudoExecutor;
+  sudoExecSync: SudoExecutorSync;
+}
+
+/** Global dependency injection context (can be overridden for testing) */
+let deps: JailRuntimeDeps | null = null;
+
+/**
+ * Set dependency injection context for testing.
+ * @param newDeps - Dependency overrides
+ */
+export function setJailRuntimeDeps(newDeps: Partial<JailRuntimeDeps>): void {
+  deps = {
+    sudoExec: newDeps.sudoExec || defaultSudoExec,
+    sudoExecSync: newDeps.sudoExecSync || defaultSudoExecSync,
+  };
+}
+
+/**
+ * Reset dependency injection context to defaults.
+ */
+export function resetJailRuntimeDeps(): void {
+  deps = null;
+}
+
+/**
+ * Get the current sudo executor (for testing).
+ */
+function getSudoExec(): SudoExecutor {
+  return deps?.sudoExec || defaultSudoExec;
+}
+
+/**
+ * Get the current sync sudo executor (for testing).
+ */
+function getSudoExecSync(): SudoExecutorSync {
+  return deps?.sudoExecSync || defaultSudoExecSync;
+}
 
 function logCleanupAudit(
   action: string,
@@ -252,6 +305,7 @@ function getFstabPath(jailName: string): string {
  */
 async function applyRctlLimits(jailName: string): Promise<void> {
   const limits = JAIL_CONFIG.resourceLimits;
+  const sudoExec = getSudoExec();
 
   try {
     // Add memory limit
@@ -284,6 +338,7 @@ async function applyRctlLimits(jailName: string): Promise<void> {
  * @param jailName - The jail name
  */
 async function removeRctlLimits(jailName: string): Promise<void> {
+  const sudoExec = getSudoExec();
   try {
     // Remove all rctl rules for this jail
     await sudoExec(['rctl', '-r', `jail:${jailName}`]);
@@ -297,8 +352,8 @@ async function removeRctlLimits(jailName: string): Promise<void> {
   }
 }
 
-/** Execute a command with sudo, returning a promise */
-function sudoExec(
+/** Default implementation: Execute a command with sudo, returning a promise */
+function defaultSudoExec(
   args: string[],
   options: SudoExecOptions = {},
 ): Promise<SudoExecResult> {
@@ -318,8 +373,8 @@ function sudoExec(
   });
 }
 
-/** Execute a command with sudo synchronously */
-function sudoExecSync(args: string[], options: SudoExecOptions = {}): string {
+/** Default implementation: Execute a command with sudo synchronously */
+function defaultSudoExecSync(args: string[], options: SudoExecOptions = {}): string {
   try {
     return execFileSync('sudo', args, {
       encoding: 'utf-8',
@@ -463,6 +518,7 @@ async function acquireEpairLock(): Promise<() => void> {
 async function createEpair(groupId: string): Promise<EpairInfo> {
   // Acquire exclusive lock to prevent concurrent epair creation
   const unlock = await acquireEpairLock();
+  const sudoExec = getSudoExec();
 
   try {
     // Check epair pool capacity before creating
@@ -541,6 +597,7 @@ async function configureJailNetwork(
   jailName: string,
   epairInfo: EpairInfo,
 ): Promise<void> {
+  const sudoExec = getSudoExec();
   // Configure the jail's interface with its unique IP
   await sudoExec([
     'jexec',
@@ -577,6 +634,7 @@ async function configureJailNetwork(
  * @param epairNum - The epair number
  */
 async function destroyEpair(epairNum: number): Promise<void> {
+  const sudoExec = getSudoExec();
   const hostIface = `epair${epairNum}a`;
   try {
     // Destroying the 'a' side destroys both sides
@@ -606,6 +664,7 @@ async function releaseEpair(groupId: string): Promise<void> {
  * @param jailPath - Path to the jail root
  */
 async function setupJailResolv(jailPath: string): Promise<void> {
+  const sudoExec = getSudoExec();
   const resolvPath = path.join(jailPath, 'etc', 'resolv.conf');
 
   try {
@@ -626,6 +685,7 @@ async function setupJailResolv(jailPath: string): Promise<void> {
 
 /** Check if a jail exists and is running */
 export function isJailRunning(jailName: string): boolean {
+  const sudoExecSync = getSudoExecSync();
   try {
     const output = sudoExecSync(['jls', '-j', jailName, 'jid'], {
       stdio: 'pipe',
@@ -777,6 +837,7 @@ async function createMountPoints(
   mounts: JailMount[],
   jailPath: string,
 ): Promise<void> {
+  const sudoExec = getSudoExec();
   const resolvedJailRoot = path.resolve(jailPath);
 
   for (const mount of mounts) {
@@ -804,6 +865,7 @@ async function mountNullfs(
   mounts: JailMount[],
   jailPath: string,
 ): Promise<void> {
+  const sudoExec = getSudoExec();
   const resolvedJailRoot = path.resolve(jailPath);
 
   for (const mount of mounts) {
@@ -845,6 +907,7 @@ async function unmountAll(
   mounts: JailMount[],
   jailPath: string,
 ): Promise<void> {
+  const sudoExec = getSudoExec();
   const errors: string[] = [];
   // Unmount in reverse order
   for (let i = mounts.length - 1; i >= 0; i--) {
@@ -913,6 +976,7 @@ export async function createJail(
   traceId?: string,
   tracedLogger?: pino.Logger,
 ): Promise<string> {
+  const sudoExec = getSudoExec();
   const log = tracedLogger || logger;
   const jailName = getJailName(groupId);
   const dataset = getJailDataset(jailName);
@@ -1272,6 +1336,7 @@ export function spawnInJail(
  * @param groupId - The group identifier
  */
 export async function stopJail(groupId: string): Promise<void> {
+  const sudoExec = getSudoExec();
   const jailName = getJailName(groupId);
 
   if (!isJailRunning(jailName)) {
@@ -1324,6 +1389,7 @@ async function forceCleanup(
   jailPath: string,
   epairNum: number | null = null,
 ): Promise<void> {
+  const sudoExec = getSudoExec();
   logger.info({ jailName }, 'Starting force cleanup');
   logCleanupAudit('FORCE_CLEANUP_START', jailName, 'INFO');
 
@@ -1450,6 +1516,7 @@ export async function cleanupJail(
   groupId: string,
   mounts: JailMount[] = [],
 ): Promise<void> {
+  const sudoExec = getSudoExec();
   const jailName = getJailName(groupId);
   const dataset = getJailDataset(jailName);
   const jailPath = getJailPath(jailName);
@@ -1882,6 +1949,7 @@ export function cleanupOrphans(): void {
  * @returns Promise<void>
  */
 export async function cleanupAllJails(): Promise<void> {
+  const sudoExec = getSudoExec();
   logger.info('Cleaning up all NanoClaw jails');
 
   let jailNames: string[] = [];
