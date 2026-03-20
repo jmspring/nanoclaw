@@ -11,6 +11,8 @@
 #
 # Requirements:
 # - Run as a user with passwordless sudo access
+#   See docs/TEMPLATE_SETUP.md for detailed sudo requirements and minimal
+#   sudoers configuration
 # - ZFS dataset zroot/nanoclaw/jails/template must exist
 # - Template must already have node24 and npm-node24 installed via pkg
 #
