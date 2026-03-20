@@ -221,122 +221,160 @@ Send a message to your configured Telegram bot mentioning the trigger word. The 
 
 ### Runtime Architecture Diagram
 
-```mermaid
-flowchart TD
-    subgraph "Message Flow"
-        MSG[Message arrives from Telegram/Slack/etc] --> ORCH[Orchestrator<br/>src/index.ts]
-        ORCH --> RUNNER[container-runner.ts]
-        RUNNER --> RUNTIME[jail-runtime.js]
-    end
+The following diagram illustrates the complete jail runtime architecture, from message ingestion through jail creation, execution, and cleanup.
 
-    subgraph "ZFS Dataset Structure"
-        POOL[(zroot/nanoclaw/jails)]
-        TEMPLATE[(template dataset)]
-        SNAPSHOT[(@base snapshot)]
-        CLONE[(nanoclaw_groupname<br/>clone)]
+```mermaid
+flowchart TB
+    %% Message Ingestion
+    MSG[Message from Channel<br/>Telegram/Slack/etc] --> ORCH[Orchestrator<br/>src/index.ts]
+    ORCH --> RUNNER[container-runner.ts]
+    RUNNER --> RUNTIME[jail-runtime.ts]
+
+    %% ZFS Dataset Structure
+    subgraph ZFS["ZFS Dataset Hierarchy"]
+        direction TB
+        POOL[zroot/nanoclaw/jails<br/>parent dataset]
+        TEMPLATE[template<br/>base FreeBSD + Node.js]
+        SNAPSHOT[@base<br/>snapshot]
+        CLONE1[nanoclaw_group1<br/>ephemeral clone]
+        CLONE2[nanoclaw_group2<br/>ephemeral clone]
 
         POOL --> TEMPLATE
         TEMPLATE --> SNAPSHOT
-        SNAPSHOT -.clone.-> CLONE
+        SNAPSHOT -.instant clone.-> CLONE1
+        SNAPSHOT -.instant clone.-> CLONE2
     end
 
-    subgraph "Jail Creation Process"
-        RUNTIME --> ZFS_CLONE[1. ZFS clone from snapshot]
-        ZFS_CLONE --> MKDIR[2. Create mount points]
-        MKDIR --> NULLFS[3. nullfs mounts]
-        NULLFS --> EPAIR_CREATE[4a. Create epair<br/>restricted mode only]
-        NULLFS --> JAIL_CREATE[4b. jail -c]
-        EPAIR_CREATE --> JAIL_CREATE
-        JAIL_CREATE --> RCTL[5. Apply rctl limits]
-        RCTL --> NETWORK_CFG[6. Configure jail network<br/>restricted mode only]
-    end
+    %% Jail Creation Flow
+    RUNTIME --> STEP1[1. ZFS Clone<br/>zfs clone @base → dataset]
+    STEP1 --> STEP2[2. Create Mount Points<br/>mkdir -p jail paths]
+    STEP2 --> STEP3[3. Write fstab<br/>nullfs mount specs]
+    STEP3 --> STEP4[4. nullfs Mounts<br/>5 semantic mounts]
 
-    subgraph "Mount Layout"
+    subgraph MOUNTS["5 nullfs Mounts"]
         direction LR
-        HOST_PROJECT[Host: NanoClaw src] -->|ro| JAIL_PROJECT[/workspace/project]
-        HOST_GROUP[Host: groups/name] -->|rw| JAIL_GROUP[/workspace/group]
-        HOST_IPC[Host: ipc/name] -->|rw| JAIL_IPC[/workspace/ipc]
-        HOST_SESSION[Host: data/sessions/name] -->|rw| JAIL_SESSION[/home/node/.claude]
-        HOST_RUNNER[Host: container/agent-runner] -->|ro| JAIL_RUNNER[/app/src]
+        M1["/workspace/project<br/>NanoClaw src ro"]
+        M2["/workspace/group<br/>groups/name rw"]
+        M3["/workspace/ipc<br/>ipc/name rw"]
+        M4["/home/node/.claude<br/>sessions/name rw"]
+        M5["/app/src<br/>agent-runner ro"]
     end
 
-    subgraph "Network Architecture - Restricted Mode"
+    STEP4 --> MOUNTS
+    STEP4 --> STEP5{Network Mode?}
+
+    %% Network Configuration
+    STEP5 -->|inherit| STEP6A[jail -c<br/>ip4=inherit]
+    STEP5 -->|restricted| STEP6B[Create epair<br/>ifconfig epair create]
+
+    subgraph EPAIR["epair Network Pair"]
+        direction LR
+        EPA[epair0a<br/>10.99.N.1/30<br/>Host side]
+        EPB[epair0b<br/>10.99.N.2/30<br/>Jail side]
+        EPA <-.vnet pair.-> EPB
+    end
+
+    STEP6B --> EPAIR
+    STEP6B --> STEP6C[jail -c<br/>vnet + epair0b]
+    STEP6A --> STEP7
+    STEP6C --> STEP7[Apply rctl Limits]
+
+    subgraph RCTL["rctl Resource Limits"]
         direction TB
-        EPAIR_A[epair0a<br/>10.99.0.1/30<br/>Host side]
-        EPAIR_B[epair0b<br/>10.99.0.2/30<br/>Jail side]
-        PF[pf NAT]
-        EXT[re0 external interface]
-
-        EPAIR_A <--> EPAIR_B
-        EPAIR_A --> PF
-        PF --> EXT
-
-        subgraph "pf Firewall Rules"
-            ALLOW_DNS[✓ DNS port 53]
-            ALLOW_API[✓ api.anthropic.com:443]
-            BLOCK_ALL[✗ All other traffic]
-        end
-
-        PF --> ALLOW_DNS
-        PF --> ALLOW_API
-        PF --> BLOCK_ALL
+        R1[memoryuse: 2G]
+        R2[maxproc: 100]
+        R3[pcpu: 80%]
     end
 
-    subgraph "Jail Execution"
-        NETWORK_CFG --> JEXEC[jexec -U node -d /app]
-        JEXEC --> ENTRYPOINT[entrypoint.sh]
-        ENTRYPOINT --> COMPILE[Compile TypeScript]
-        COMPILE --> AGENT[Run Agent SDK]
-        AGENT --> CLAUDE_API[api.anthropic.com]
-        CLAUDE_API --> RESPONSE[Write response to IPC]
+    STEP7 --> RCTL
+    STEP7 --> STEP8{Network Mode?}
+    STEP8 -->|inherit| STEP9
+    STEP8 -->|restricted| STEP8A[Configure Jail Network<br/>ifconfig + route]
+    STEP8A --> STEP9[Jail Ready]
+
+    %% pf Firewall (restricted mode)
+    subgraph PF["pf Firewall - Restricted Mode"]
+        direction TB
+        PF_NAT[NAT: 10.99.0.0/24 → external]
+        PF_ALLOW[✓ DNS port 53<br/>✓ api.anthropic.com:443]
+        PF_BLOCK[✗ All other egress]
+        PF_NAT --> PF_ALLOW
+        PF_NAT --> PF_BLOCK
     end
 
-    subgraph "Cleanup Process"
-        RESPONSE --> STOP[jail -r stop]
-        STOP --> REMOVE_RCTL[Remove rctl limits]
-        REMOVE_RCTL --> UMOUNT_DEV[Unmount devfs]
-        UMOUNT_DEV --> UMOUNT_NULLFS[Unmount nullfs mounts]
-        UMOUNT_NULLFS --> DESTROY_EPAIR[Destroy epair<br/>restricted mode]
-        DESTROY_EPAIR --> ZFS_DESTROY[zfs destroy clone]
-        ZFS_DESTROY --> CLEANUP_FSTAB[Remove fstab file]
+    EPA -.routes through.-> PF
+
+    %% Agent Execution
+    STEP9 --> EXEC1[jexec -U node<br/>run as node user]
+    EXEC1 --> EXEC2[entrypoint.sh]
+    EXEC2 --> EXEC3[Compile TypeScript<br/>tsc → /tmp/dist]
+    EXEC3 --> EXEC4[Agent SDK Execution<br/>process message]
+    EXEC4 --> EXEC5[Claude API Request<br/>api.anthropic.com]
+    EXEC5 --> EXEC6[Write Response<br/>to IPC directory]
+
+    %% Cleanup Process
+    EXEC6 --> CLEAN1[Cleanup Temp Files<br/>rm -rf /tmp/dist]
+    CLEAN1 --> CLEAN2[Remove rctl Limits<br/>rctl -r jail]
+    CLEAN2 --> CLEAN3[jail -r<br/>stop jail]
+    CLEAN3 --> CLEAN4[Unmount devfs<br/>umount /jail/dev]
+    CLEAN4 --> CLEAN5[Unmount nullfs<br/>5 mounts reversed]
+    CLEAN5 --> CLEAN6{Network Mode?}
+    CLEAN6 -->|inherit| CLEAN8
+    CLEAN6 -->|restricted| CLEAN7[Destroy epair<br/>ifconfig destroy]
+    CLEAN7 --> CLEAN8[zfs destroy -r<br/>destroy clone]
+    CLEAN8 --> CLEAN9[Remove fstab<br/>cleanup complete]
+
+    %% Security Annotations
+    subgraph SECURITY["Security - devfs ruleset 10"]
+        direction TB
+        SEC_ALLOW[✓ null, zero, random<br/>✓ stdin, stdout, stderr<br/>✓ pts/*, fd/*]
+        SEC_BLOCK[✗ mem, kmem, io<br/>✗ bpf*, md*]
     end
 
-    subgraph "Resource Limits - rctl"
-        RCTL_MEM[memoryuse: 2G]
-        RCTL_PROC[maxproc: 100]
-        RCTL_CPU[pcpu: 80%]
-    end
+    STEP6A -.applies.-> SECURITY
+    STEP6C -.applies.-> SECURITY
 
-    subgraph "Security - devfs ruleset 10"
-        DEVFS_ALLOW[✓ null, zero, random<br/>✓ stdin, stdout, stderr<br/>✓ pts/*, fd/*]
-        DEVFS_BLOCK[✗ mem, kmem, io<br/>✗ bpf*, md*]
-    end
-
-    RUNTIME --> POOL
-    ZFS_CLONE --> CLONE
-    NULLFS --> HOST_PROJECT
-    NULLFS --> HOST_GROUP
-    NULLFS --> HOST_IPC
-    NULLFS --> HOST_SESSION
-    NULLFS --> HOST_RUNNER
-
-    JAIL_CREATE --> DEVFS_ALLOW
-    JAIL_CREATE --> DEVFS_BLOCK
-    RCTL --> RCTL_MEM
-    RCTL --> RCTL_PROC
-    RCTL --> RCTL_CPU
-
-    EPAIR_CREATE --> EPAIR_A
-
-    style MSG fill:#e1f5ff
-    style CLONE fill:#fff4e6
-    style AGENT fill:#e8f5e9
-    style BLOCK_ALL fill:#ffebee
-    style DEVFS_BLOCK fill:#ffebee
-    style ALLOW_DNS fill:#e8f5e9
-    style ALLOW_API fill:#e8f5e9
-    style DEVFS_ALLOW fill:#e8f5e9
+    %% Styling
+    style MSG fill:#e1f5ff,stroke:#01579b
+    style CLONE1 fill:#fff4e6,stroke:#e65100
+    style CLONE2 fill:#fff4e6,stroke:#e65100
+    style EXEC4 fill:#e8f5e9,stroke:#2e7d32
+    style PF_BLOCK fill:#ffebee,stroke:#c62828
+    style SEC_BLOCK fill:#ffebee,stroke:#c62828
+    style PF_ALLOW fill:#e8f5e9,stroke:#2e7d32
+    style SEC_ALLOW fill:#e8f5e9,stroke:#2e7d32
+    style CLEAN9 fill:#f3e5f5,stroke:#6a1b9a
 ```
+
+### Architecture Components
+
+**ZFS Dataset Structure:**
+- Base pool: `zroot/nanoclaw/jails`
+- Template dataset with snapshot: `template@base`
+- Each jail clones the snapshot for instant, zero-copy startup
+- Clones are ephemeral and destroyed after execution
+
+**Mount Layout (5 semantic mounts via nullfs):**
+1. `/workspace/project` - NanoClaw source code (read-only)
+2. `/workspace/group` - Group-specific workspace (read-write)
+3. `/workspace/ipc` - IPC message queue (read-write)
+4. `/home/node/.claude` - Claude session persistence (read-write)
+5. `/app/src` - Agent runner source (read-only)
+
+**Network Modes:**
+- **inherit**: Jail shares host network stack (development)
+- **restricted**: Isolated vnet with epair pair + pf firewall rules (production)
+
+**Resource Isolation:**
+- rctl limits: memory (2G), processes (100), CPU (80%)
+- devfs ruleset: blocks dangerous devices (mem, kmem, bpf)
+
+**Agent Execution Flow:**
+1. Compile TypeScript to `/tmp/dist` inside jail
+2. Run Agent SDK with Claude Code tools
+3. Make API requests to api.anthropic.com
+4. Write responses to IPC directory
+5. Clean up temp files and destroy jail
 
 ### Jail Lifecycle
 
