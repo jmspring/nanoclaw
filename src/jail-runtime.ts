@@ -127,6 +127,8 @@ export const JAIL_CONFIG: JailConfig = {
   workspacesPath: '/home/jims/code/nanoclaw/workspaces',
   ipcPath: '/home/jims/code/nanoclaw/ipc',
   // Network mode: "inherit" (ip4=inherit) or "restricted" (vnet with epair and pf)
+  // IMPORTANT: Changing network mode requires updating pf configuration.
+  // See docs/network-mode-migration.md or run scripts/switch-network-mode.sh
   networkMode:
     (process.env.NANOCLAW_JAIL_NETWORK_MODE as 'inherit' | 'restricted') ||
     'inherit',
@@ -1752,6 +1754,77 @@ export function isAtJailCapacity(): boolean {
   return activeJails.size >= MAX_CONCURRENT_JAILS;
 }
 
+/**
+ * Validate that pf configuration matches the current network mode.
+ * In 'restricted' mode, pf must be enabled and have NAT/filter rules for jail network.
+ * In 'inherit' mode, pf configuration is optional.
+ * @throws Error if validation fails
+ */
+export function validatePfConfiguration(): void {
+  if (JAIL_CONFIG.networkMode !== 'restricted') {
+    // In 'inherit' mode, pf is not required
+    return;
+  }
+
+  // In 'restricted' mode, we need pf enabled with proper rules
+  try {
+    // Check if pf is enabled
+    const pfInfo = execFileSync('sudo', ['pfctl', '-s', 'info'], {
+      stdio: 'pipe',
+      timeout: 5000,
+      encoding: 'utf-8',
+    });
+
+    if (!pfInfo.includes('Status: Enabled')) {
+      throw new Error(
+        'NETWORK MODE MISMATCH: Network mode is "restricted" but pf is not enabled.\n' +
+          'To fix this issue:\n' +
+          '  1. Run the migration script: scripts/switch-network-mode.sh restricted\n' +
+          '  2. Or manually enable pf: sudo pfctl -e\n' +
+          '  3. Or switch to "inherit" mode: export NANOCLAW_JAIL_NETWORK_MODE=inherit',
+      );
+    }
+
+    // Check for NAT rules for jail network (10.99.0.0/24)
+    const natRules = execFileSync('sudo', ['pfctl', '-s', 'nat'], {
+      stdio: 'pipe',
+      timeout: 5000,
+      encoding: 'utf-8',
+    });
+
+    if (!natRules.includes('10.99.0.0/24')) {
+      throw new Error(
+        'NETWORK MODE MISMATCH: Network mode is "restricted" but pf NAT rules for jail network not found.\n' +
+          'To fix this issue:\n' +
+          '  1. Run the migration script: scripts/switch-network-mode.sh restricted\n' +
+          '  2. Or manually load pf config: sudo pfctl -f etc/pf-nanoclaw.conf\n' +
+          '  3. Or switch to "inherit" mode: export NANOCLAW_JAIL_NETWORK_MODE=inherit',
+      );
+    }
+
+    logger.info('PF configuration validated for restricted network mode');
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('NETWORK MODE MISMATCH')) {
+      // Re-throw our validation errors as-is
+      logger.fatal({ err }, 'PF configuration validation failed');
+      throw err;
+    }
+
+    // pfctl command failed - pf may not be available or not configured
+    logger.fatal(
+      { err },
+      'FATAL: Cannot validate pf configuration. Ensure pf is installed and configured.',
+    );
+    throw new Error(
+      'NETWORK MODE MISMATCH: Network mode is "restricted" but pf validation failed.\n' +
+        'To fix this issue:\n' +
+        '  1. Run the migration script: scripts/switch-network-mode.sh restricted\n' +
+        '  2. Or manually configure pf (see etc/pf-nanoclaw.conf)\n' +
+        '  3. Or switch to "inherit" mode: export NANOCLAW_JAIL_NETWORK_MODE=inherit',
+    );
+  }
+}
+
 /** Ensure the jail subsystem is available. */
 export function ensureJailRuntimeRunning(): void {
   try {
@@ -1767,6 +1840,9 @@ export function ensureJailRuntimeRunning(): void {
 
     // Check jail command is available
     execFileSync('which', ['jail'], { stdio: 'pipe', timeout: JAIL_QUICK_OP_TIMEOUT });
+
+    // Validate pf configuration matches network mode
+    validatePfConfiguration();
 
     // Restore epair state from disk for crash recovery
     if (JAIL_CONFIG.networkMode === 'restricted') {
