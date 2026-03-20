@@ -190,7 +190,15 @@ let deps: JailRuntimeDeps | null = null;
 
 /**
  * Set dependency injection context for testing.
- * @param newDeps - Dependency overrides
+ * Allows tests to override sudo execution with mocks or stubs.
+ * @param newDeps - Dependency overrides (sudoExec and/or sudoExecSync)
+ * @example
+ * ```typescript
+ * setJailRuntimeDeps({
+ *   sudoExec: async (args) => ({ stdout: 'mocked', stderr: '' }),
+ *   sudoExecSync: (args) => 'mocked'
+ * });
+ * ```
  */
 export function setJailRuntimeDeps(newDeps: Partial<JailRuntimeDeps>): void {
   deps = {
@@ -201,6 +209,7 @@ export function setJailRuntimeDeps(newDeps: Partial<JailRuntimeDeps>): void {
 
 /**
  * Reset dependency injection context to defaults.
+ * Restores production sudo execution behavior after testing.
  */
 export function resetJailRuntimeDeps(): void {
   deps = null;
@@ -231,8 +240,16 @@ const EPAIR_LOCK_DIR = '/tmp/nanoclaw-epair.lock';
 
 /**
  * Track temp files created during a jail session for later cleanup.
+ * Marks temporary files/directories for removal when the jail is cleaned up.
+ * Common use case: tracking /tmp/dist (compiled TypeScript), /tmp/input.json, etc.
  * @param groupId - The group identifier
  * @param tempPath - The path inside the jail's /tmp directory (e.g., '/tmp/dist', '/tmp/input.json')
+ * @example
+ * ```typescript
+ * trackJailTempFile('my-group', '/tmp/dist');
+ * trackJailTempFile('my-group', '/tmp/input.json');
+ * // These paths will be removed during cleanupJail()
+ * ```
  */
 export function trackJailTempFile(groupId: string, tempPath: string): void {
   if (!jailTempDirs.has(groupId)) {
@@ -515,7 +532,10 @@ function defaultSudoExec(
 }
 
 /** Default implementation: Execute a command with sudo synchronously */
-function defaultSudoExecSync(args: string[], options: SudoExecOptions = {}): string {
+function defaultSudoExecSync(
+  args: string[],
+  options: SudoExecOptions = {},
+): string {
   try {
     return execFileSync('sudo', args, {
       encoding: 'utf-8',
@@ -638,7 +658,10 @@ async function acquireEpairLock(): Promise<() => void> {
           fs.rmdirSync(EPAIR_LOCK_DIR);
           sessionTempFiles.delete(EPAIR_LOCK_DIR);
         } catch (err) {
-          logger.warn({ err, lockDir: EPAIR_LOCK_DIR }, 'Failed to release epair lock');
+          logger.warn(
+            { err, lockDir: EPAIR_LOCK_DIR },
+            'Failed to release epair lock',
+          );
         }
       };
     } catch (err) {
@@ -656,8 +679,18 @@ async function acquireEpairLock(): Promise<() => void> {
 
 /**
  * Create an epair interface pair for a vnet jail.
- * @param groupId - The group identifier (for tracking)
- * @returns Promise with epair information
+ * Creates a virtual Ethernet interface pair (epairNa/epairNb) for jail networking.
+ * Allocates unique /30 subnet from 10.99.0.0/24 pool. Uses atomic locking to prevent
+ * concurrent allocation conflicts.
+ * @param groupId - The group identifier (for tracking and cleanup)
+ * @returns Promise resolving to epair information (interface names, IPs, netmask)
+ * @throws Error if epair pool is exhausted (max 200 concurrent jails in restricted mode)
+ * @example
+ * ```typescript
+ * const epair = await createEpair('my-group');
+ * // epair = { epairNum: 5, hostIface: 'epair5a', jailIface: 'epair5b',
+ * //           hostIP: '10.99.5.1', jailIP: '10.99.5.2', netmask: '30' }
+ * ```
  */
 async function createEpair(groupId: string): Promise<EpairInfo> {
   // Acquire exclusive lock to prevent concurrent epair creation
@@ -734,10 +767,19 @@ async function createEpair(groupId: string): Promise<EpairInfo> {
 
 /**
  * Configure networking inside a vnet jail after it starts.
+ * Assigns IP address to jail's epair interface and sets up default gateway.
+ * Only used in 'restricted' network mode with vnet isolation.
  * @param jailName - The jail name
- * @param epairInfo - Epair interface and IP information
+ * @param epairInfo - Epair interface and IP information from createEpair()
+ * @throws Error if jexec commands fail (jail not running or network error)
+ * @example
+ * ```typescript
+ * const epair = await createEpair('my-group');
+ * await configureJailNetwork('nanoclaw_my_group', epair);
+ * // Jail now has IP 10.99.5.2/30 with gateway 10.99.5.1
+ * ```
  */
-async function configureJailNetwork(
+export async function configureJailNetwork(
   jailName: string,
   epairInfo: EpairInfo,
 ): Promise<void> {
@@ -775,9 +817,15 @@ async function configureJailNetwork(
 
 /**
  * Destroy an epair interface pair.
- * @param epairNum - The epair number
+ * Removes both sides of the virtual Ethernet pair (epairNa and epairNb).
+ * Destroying the 'a' side automatically destroys the 'b' side.
+ * @param epairNum - The epair number (e.g., 5 for epair5a/epair5b)
+ * @example
+ * ```typescript
+ * await destroyEpair(5); // Destroys epair5a and epair5b
+ * ```
  */
-async function destroyEpair(epairNum: number): Promise<void> {
+export async function destroyEpair(epairNum: number): Promise<void> {
   const sudoExec = getSudoExec();
   const hostIface = `epair${epairNum}a`;
   try {
@@ -934,6 +982,25 @@ function validateJailMount(mount: JailMount): void {
   }
 }
 
+/**
+ * Build mount specifications from semantic paths.
+ * Converts high-level mount paths (project, group, ipc, etc.) into jail mount specs.
+ * Validates additional mounts for security (path traversal, symlinks, blocked paths).
+ * @param paths - Semantic mount paths (projectPath, groupPath, ipcPath, etc.)
+ * @returns Array of mount specifications ready for jail creation
+ * @throws Error if mount validation fails (security checks)
+ * @example
+ * ```typescript
+ * const mounts = buildJailMounts({
+ *   projectPath: '/home/user/project',
+ *   groupPath: '/home/user/.nanoclaw/groups/my-group',
+ *   ipcPath: '/home/user/.nanoclaw/ipc/my-group',
+ *   claudeSessionPath: '/home/user/.nanoclaw/sessions/my-group',
+ *   agentRunnerPath: '/home/user/.nanoclaw/agent-runner',
+ * });
+ * // Returns 5 mounts (project ro, group rw, ipc rw, session rw, runner ro)
+ * ```
+ */
 export function buildJailMounts(paths: JailMountPaths): JailMount[] {
   const mounts: JailMount[] = [];
 
@@ -1003,7 +1070,19 @@ export function buildJailMounts(paths: JailMountPaths): JailMount[] {
  * Ensure host-side directories exist for writable mounts.
  * Creates groupPath, ipcPath, claudeSessionPath if they don't exist.
  * Sets mode 2775 (setgid) and group wheel (gid 0) for shared host/jail access.
- * @param paths - Semantic mount paths
+ * This ensures files created by jail's node user (gid wheel) are writable by host user.
+ * @param paths - Semantic mount paths (groupPath, ipcPath, claudeSessionPath)
+ * @example
+ * ```typescript
+ * ensureHostDirectories({
+ *   groupPath: '/home/user/.nanoclaw/groups/my-group',
+ *   ipcPath: '/home/user/.nanoclaw/ipc/my-group',
+ *   claudeSessionPath: '/home/user/.nanoclaw/sessions/my-group',
+ *   projectPath: null,
+ *   agentRunnerPath: '/app/agent-runner',
+ * });
+ * // Creates directories with mode 2775 and group wheel
+ * ```
  */
 export function ensureHostDirectories(paths: JailMountPaths): void {
   const dirsToCreate = [
@@ -1166,11 +1245,24 @@ async function unmountAll(
 /**
  * Create a new jail from template snapshot using semantic paths.
  * This is the preferred entry point for jail creation - no Docker translation needed.
- * @param groupId - The group identifier
- * @param paths - Semantic mount paths
- * @param traceId - Optional trace ID for request correlation
- * @param tracedLogger - Optional traced logger for request correlation
- * @returns Promise with jail name and mount specs for cleanup
+ * Handles directory creation, mount setup, networking (if restricted mode), and resource limits.
+ * @param groupId - The group identifier (used for jail name generation)
+ * @param paths - Semantic mount paths (projectPath, groupPath, ipcPath, etc.)
+ * @param traceId - Optional trace ID for request correlation logging
+ * @param tracedLogger - Optional traced logger for request correlation logging
+ * @returns Promise resolving to jail name and mount specs (for cleanup)
+ * @throws Error if jail creation fails (ZFS, mount, network, or resource limit errors)
+ * @example
+ * ```typescript
+ * const result = await createJailWithPaths('my-group', {
+ *   projectPath: '/home/user/project',
+ *   groupPath: '/home/user/.nanoclaw/groups/my-group',
+ *   ipcPath: '/home/user/.nanoclaw/ipc/my-group',
+ *   claudeSessionPath: '/home/user/.nanoclaw/sessions/my-group',
+ *   agentRunnerPath: '/app/agent-runner',
+ * });
+ * // result = { jailName: 'nanoclaw_my_group_a1b2c3', mounts: [...] }
+ * ```
  */
 export async function createJailWithPaths(
   groupId: string,
@@ -1194,11 +1286,22 @@ export async function createJailWithPaths(
 
 /**
  * Create a new jail from template snapshot.
- * @param groupId - The group identifier
- * @param mounts - Mount specifications
- * @param traceId - Optional trace ID for request correlation
- * @param tracedLogger - Optional traced logger for request correlation
- * @returns Promise with the jail name
+ * Low-level jail creation function. Use createJailWithPaths() for typical use cases.
+ * Clones ZFS template, sets up mounts, configures network (if restricted), applies resource limits.
+ * @param groupId - The group identifier (used for jail name generation)
+ * @param mounts - Mount specifications (hostPath, jailPath, readonly)
+ * @param traceId - Optional trace ID for request correlation logging
+ * @param tracedLogger - Optional traced logger for request correlation logging
+ * @returns Promise resolving to jail name (e.g., 'nanoclaw_my_group_a1b2c3')
+ * @throws Error if jail creation fails (ZFS clone, mount, network, or capacity exceeded)
+ * @example
+ * ```typescript
+ * const jailName = await createJail('my-group', [
+ *   { hostPath: '/home/user/project', jailPath: '/workspace/project', readonly: true },
+ *   { hostPath: '/home/user/.nanoclaw/groups/my-group', jailPath: '/workspace/group', readonly: false },
+ * ]);
+ * // jailName = 'nanoclaw_my_group_a1b2c3'
+ * ```
  */
 export async function createJail(
   groupId: string,
@@ -1362,10 +1465,24 @@ export async function createJail(
 
 /**
  * Execute a command inside a jail.
- * @param groupId - The group identifier
- * @param command - Command and arguments to execute
- * @param options - Execution options
- * @returns Promise with execution result
+ * Runs command as 'node' user (uid 1000) with optional environment variables and working directory.
+ * Supports timeout, abort signals, and streaming output callbacks.
+ * @param groupId - The group identifier (determines which jail to execute in)
+ * @param command - Command and arguments to execute (e.g., ['node', 'script.js'])
+ * @param options - Execution options (env, cwd, timeout, signal, callbacks)
+ * @returns Promise resolving to execution result (code, stdout, stderr)
+ * @throws Error if jail is not running, execution times out, or is aborted
+ * @example
+ * ```typescript
+ * const result = await execInJail('my-group', ['node', '--version'], {
+ *   env: { NODE_ENV: 'production' },
+ *   cwd: '/workspace/project',
+ *   timeout: 30000,
+ *   onStdout: (data) => console.log('OUT:', data),
+ *   onStderr: (data) => console.error('ERR:', data),
+ * });
+ * // result = { code: 0, stdout: 'v20.10.0\n', stderr: '' }
+ * ```
  */
 export async function execInJail(
   groupId: string,
@@ -1508,10 +1625,22 @@ export async function execInJail(
 
 /**
  * Spawn an interactive process inside a jail (for streaming I/O).
- * @param groupId - The group identifier
- * @param command - Command and arguments to execute
- * @param options - Spawn options
- * @returns ChildProcess
+ * Runs command as 'node' user with streaming stdin/stdout/stderr.
+ * Use this instead of execInJail() when you need real-time I/O or long-running processes.
+ * @param groupId - The group identifier (determines which jail to execute in)
+ * @param command - Command and arguments to execute (e.g., ['node', 'server.js'])
+ * @param options - Spawn options (env, cwd)
+ * @returns ChildProcess with stdin/stdout/stderr streams
+ * @example
+ * ```typescript
+ * const proc = spawnInJail('my-group', ['node', 'server.js'], {
+ *   env: { PORT: '3000' },
+ *   cwd: '/workspace/project',
+ * });
+ * proc.stdout.on('data', (data) => console.log(data.toString()));
+ * proc.stderr.on('data', (data) => console.error(data.toString()));
+ * proc.on('close', (code) => console.log('Exit code:', code));
+ * ```
  */
 export function spawnInJail(
   groupId: string,
@@ -1560,7 +1689,15 @@ export function spawnInJail(
 
 /**
  * Stop a running jail.
- * @param groupId - The group identifier
+ * Gracefully stops jail with timeout, then force-kills processes if needed.
+ * Does not unmount filesystems or destroy ZFS dataset (use cleanupJail for full cleanup).
+ * @param groupId - The group identifier (determines which jail to stop)
+ * @throws Error if jail cannot be stopped (even with force)
+ * @example
+ * ```typescript
+ * await stopJail('my-group');
+ * // Jail 'nanoclaw_my_group_a1b2c3' is now stopped but dataset still exists
+ * ```
  */
 export async function stopJail(groupId: string): Promise<void> {
   const sudoExec = getSudoExec();
@@ -1736,8 +1873,16 @@ async function forceCleanup(
 
 /**
  * Clean up jail resources (unmount, destroy dataset, remove fstab, remove IP alias).
- * @param groupId - The group identifier
- * @param mounts - Mount specifications (for unmounting)
+ * Stops jail, cleans temp files, unmounts filesystems, destroys ZFS dataset and epair.
+ * Uses retry logic and automatic fallback to force cleanup if normal cleanup fails.
+ * @param groupId - The group identifier (determines which jail to clean up)
+ * @param mounts - Mount specifications (for unmounting nullfs mounts)
+ * @throws AggregateError if both normal and force cleanup fail
+ * @example
+ * ```typescript
+ * await cleanupJail('my-group', mounts);
+ * // Jail completely removed: stopped, unmounted, ZFS dataset destroyed, epair released
+ * ```
  */
 export async function cleanupJail(
   groupId: string,
@@ -1960,8 +2105,15 @@ export async function cleanupJail(
 
 /**
  * Destroy a jail completely (stop + cleanup).
- * @param groupId - The group identifier
- * @param mounts - Mount specifications
+ * Alias for cleanupJail() - stops jail and removes all resources.
+ * @param groupId - The group identifier (determines which jail to destroy)
+ * @param mounts - Mount specifications (for unmounting nullfs mounts)
+ * @throws AggregateError if cleanup fails
+ * @example
+ * ```typescript
+ * await destroyJail('my-group', mounts);
+ * // Equivalent to cleanupJail('my-group', mounts)
+ * ```
  */
 export async function destroyJail(
   groupId: string,
@@ -1997,9 +2149,19 @@ export function isAtJailCapacity(): boolean {
 
 /**
  * Validate that pf configuration matches the current network mode.
- * In 'restricted' mode, pf must be enabled and have NAT/filter rules for jail network.
+ * In 'restricted' mode, pf must be enabled and have NAT/filter rules for jail network (10.99.0.0/24).
  * In 'inherit' mode, pf configuration is optional.
- * @throws Error if validation fails
+ * Called during ensureJailRuntimeRunning() to detect misconfiguration early.
+ * @throws Error if validation fails (pf not enabled, NAT rules missing, or pfctl command fails)
+ * @example
+ * ```typescript
+ * validatePfConfiguration();
+ * // If networkMode === 'restricted':
+ * //   - Checks pf is enabled
+ * //   - Checks NAT rules exist for 10.99.0.0/24
+ * // If networkMode === 'inherit':
+ * //   - No-op (returns immediately)
+ * ```
  */
 export function validatePfConfiguration(): void {
   if (JAIL_CONFIG.networkMode !== 'restricted') {
@@ -2066,11 +2228,30 @@ export function validatePfConfiguration(): void {
   }
 }
 
-/** Ensure the jail subsystem is available. */
+/**
+ * Ensure the jail subsystem is available.
+ * Validates ZFS is installed, template snapshot exists, jail(8) is in PATH, and pf
+ * configuration matches network mode. Restores epair state from disk for crash recovery.
+ * Call this during application startup to fail fast if jail runtime is not configured.
+ * @throws Error if runtime requirements not met (missing ZFS, template, jail command, or pf misconfigured)
+ * @example
+ * ```typescript
+ * ensureJailRuntimeRunning();
+ * // Validates:
+ * //   - zfs command exists
+ * //   - zroot/nanoclaw/jails/template@base snapshot exists
+ * //   - jail command exists
+ * //   - pf config matches JAIL_CONFIG.networkMode
+ * //   - Restores epair state from /var/run/nanoclaw/epairs.json (if restricted mode)
+ * ```
+ */
 export function ensureJailRuntimeRunning(): void {
   try {
     // Check ZFS is available
-    execFileSync('zfs', ['version'], { stdio: 'pipe', timeout: JAIL_QUICK_OP_TIMEOUT });
+    execFileSync('zfs', ['version'], {
+      stdio: 'pipe',
+      timeout: JAIL_QUICK_OP_TIMEOUT,
+    });
 
     // Check template snapshot exists
     const snapshot = `${JAIL_CONFIG.templateDataset}@${JAIL_CONFIG.templateSnapshot}`;
@@ -2080,7 +2261,10 @@ export function ensureJailRuntimeRunning(): void {
     });
 
     // Check jail command is available
-    execFileSync('which', ['jail'], { stdio: 'pipe', timeout: JAIL_QUICK_OP_TIMEOUT });
+    execFileSync('which', ['jail'], {
+      stdio: 'pipe',
+      timeout: JAIL_QUICK_OP_TIMEOUT,
+    });
 
     // Validate pf configuration matches network mode
     validatePfConfiguration();
@@ -2152,7 +2336,19 @@ function cleanupOrphanedTempFiles(): void {
   }
 }
 
-/** Kill orphaned NanoClaw jails from previous runs. */
+/**
+ * Clean up orphaned NanoClaw jails from previous runs.
+ * Finds all running jails with 'nanoclaw_' prefix, stops them, unmounts filesystems,
+ * destroys ZFS datasets, removes fstabs, and cleans up orphaned epair interfaces.
+ * Call this during startup to remove leftover jails from crashes or unclean shutdowns.
+ * @example
+ * ```typescript
+ * cleanupOrphans();
+ * // Stops all 'nanoclaw_*' jails
+ * // Removes their datasets, mounts, and epair interfaces
+ * // Cleans up temp files in running jails
+ * ```
+ */
 export function cleanupOrphans(): void {
   // First, clean up temp files in any running jails
   cleanupOrphanedTempFiles();
@@ -2311,7 +2507,17 @@ export function cleanupOrphans(): void {
 /**
  * Clean up all running NanoClaw jails.
  * Called during shutdown to ensure devfs is unmounted and ZFS datasets can be destroyed.
- * @returns Promise<void>
+ * Stops all jails, unmounts filesystems, destroys datasets, removes fstabs, and cleans up
+ * epair interfaces. More aggressive than cleanupOrphans() and uses async operations.
+ * @returns Promise resolving when all jails are cleaned up
+ * @example
+ * ```typescript
+ * await cleanupAllJails();
+ * // All 'nanoclaw_*' jails stopped
+ * // All datasets destroyed
+ * // All epair interfaces removed
+ * // Host temp files cleaned up
+ * ```
  */
 export async function cleanupAllJails(): Promise<void> {
   const sudoExec = getSudoExec();
@@ -2542,7 +2748,13 @@ export function getEpairMetrics(): {
 
 /**
  * List all running NanoClaw jails.
- * @returns Array of jail names
+ * Queries jls for all jails with 'nanoclaw_' prefix.
+ * @returns Array of jail names (e.g., ['nanoclaw_group1_a1b2c3', 'nanoclaw_group2_d4e5f6'])
+ * @example
+ * ```typescript
+ * const jails = listRunningNanoclawJails();
+ * console.log(`Found ${jails.length} running jails:`, jails);
+ * ```
  */
 export function listRunningNanoclawJails(): string[] {
   try {
@@ -2563,8 +2775,18 @@ export function listRunningNanoclawJails(): string[] {
 
 /**
  * Track a jail as active so it won't be cleaned up as an orphan.
- * Called during startup to reconnect to existing jails.
- * @param jailName - The jail name
+ * Called during startup to reconnect to existing jails from previous run.
+ * Prevents cleanupOrphans() from removing jails that are still in use.
+ * @param jailName - The jail name (e.g., 'nanoclaw_my_group_a1b2c3')
+ * @example
+ * ```typescript
+ * // During startup, reconnect to existing jails:
+ * const jails = listRunningNanoclawJails();
+ * for (const jailName of jails) {
+ *   trackActiveJail(jailName);
+ * }
+ * // Now cleanupOrphans() won't remove these jails
+ * ```
  */
 export function trackActiveJail(jailName: string): void {
   // Extract groupId from jail name (nanoclaw_<groupId>)
