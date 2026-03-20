@@ -631,10 +631,39 @@ Directories use setgid (mode 2775) so new files inherit the wheel group, allowin
 
 ### Sudoers Configuration
 
-Add to `/usr/local/etc/sudoers.d/nanoclaw` (replace `youruser` with your actual username):
+The jail runtime requires passwordless sudo access to perform privileged operations. This section documents all required commands and their purposes, following the principle of least privilege.
+
+#### Why Sudo is Required
+
+FreeBSD jails require root privileges for several operations:
+- Creating and destroying jails (system resource allocation)
+- Managing ZFS datasets (filesystem operations)
+- Mounting and unmounting filesystems (kernel operations)
+- Managing network interfaces (system-level networking)
+- Applying resource limits (kernel resource controls)
+
+While some container systems use a privileged daemon, NanoClaw uses sudo to maintain transparency and auditability - each operation is logged via sudo, and the permissions are explicitly declared in the sudoers file.
+
+#### Principle of Least Privilege
+
+This sudoers configuration follows the principle of least privilege by:
+
+1. **Command-specific permissions**: Only specific commands are allowed, not blanket root access
+2. **Path restrictions**: Full paths prevent PATH hijacking attacks
+3. **No shell access**: Commands are executed directly, not through an interactive shell (except where required for complex operations)
+4. **User-specific**: Permissions are granted to a specific user, not groups or wildcards
+5. **No password**: NOPASSWD allows the runtime to operate without interactive prompts, but this is balanced by limiting the commands
+
+#### Sudoers File Setup
+
+Create `/usr/local/etc/sudoers.d/nanoclaw` with the following content (replace `youruser` with your actual username):
 
 ```
-# Jail operations
+# NanoClaw FreeBSD Jail Runtime
+# This file grants passwordless sudo access for jail operations
+# Replace 'youruser' with your actual username
+
+# Jail management
 youruser ALL=(ALL) NOPASSWD: /usr/sbin/jail
 youruser ALL=(ALL) NOPASSWD: /usr/sbin/jexec
 youruser ALL=(ALL) NOPASSWD: /usr/sbin/jls
@@ -643,16 +672,123 @@ youruser ALL=(ALL) NOPASSWD: /usr/sbin/jls
 youruser ALL=(ALL) NOPASSWD: /sbin/zfs
 
 # Mount operations
-youruser ALL=(ALL) NOPASSWD: /sbin/mount*
+youruser ALL=(ALL) NOPASSWD: /sbin/mount
+youruser ALL=(ALL) NOPASSWD: /sbin/mount_nullfs
 youruser ALL=(ALL) NOPASSWD: /sbin/umount
 
-# Network operations (for restricted mode)
+# Network operations (required for restricted mode only)
 youruser ALL=(ALL) NOPASSWD: /sbin/ifconfig
 youruser ALL=(ALL) NOPASSWD: /sbin/route
 
 # Resource limits (rctl)
 youruser ALL=(ALL) NOPASSWD: /usr/bin/rctl
+
+# Directory operations (used inside jails)
+youruser ALL=(ALL) NOPASSWD: /bin/mkdir
+youruser ALL=(ALL) NOPASSWD: /bin/chmod
+youruser ALL=(ALL) NOPASSWD: /usr/sbin/chown
+
+# Shell access (for complex operations - see security notes below)
+youruser ALL=(ALL) NOPASSWD: /bin/sh
 ```
+
+**Important**: Ensure the file has correct permissions:
+```sh
+sudo chmod 0440 /usr/local/etc/sudoers.d/nanoclaw
+sudo chown root:wheel /usr/local/etc/sudoers.d/nanoclaw
+```
+
+#### Command Reference
+
+This table documents all sudo commands used by jail-runtime.ts and their purposes:
+
+| Command | Purpose | When Used | Security Impact |
+|---------|---------|-----------|-----------------|
+| `/usr/sbin/jail` | Create and manage jails | Creating jails (`jail -c`), stopping jails (`jail -r`) | High - full jail control |
+| `/usr/sbin/jexec` | Execute commands in jails | Running agent processes, cleanup operations | High - arbitrary code in jails |
+| `/usr/sbin/jls` | List running jails | Health checks, cleanup, orphan detection | Low - read-only |
+| `/sbin/zfs` | Manage ZFS datasets | Clone template, destroy jail datasets | High - filesystem operations |
+| `/sbin/mount` | Mount filesystems | Not directly used (mount_nullfs handles it) | Medium - filesystem access |
+| `/sbin/mount_nullfs` | Mount nullfs filesystems | Mounting project, group, IPC directories | Medium - controlled mount points |
+| `/sbin/umount` | Unmount filesystems | Cleanup, force unmount during errors | Medium - requires careful ordering |
+| `/sbin/ifconfig` | Manage network interfaces | Create/destroy epair interfaces (restricted mode) | High - network configuration |
+| `/sbin/route` | Manage routing table | Configure jail default routes (restricted mode) | Medium - network routing |
+| `/usr/bin/rctl` | Resource control limits | Apply/remove memory, CPU, process limits | Medium - DoS prevention |
+| `/bin/mkdir` | Create directories | Create mount points inside jails | Low - controlled paths |
+| `/bin/chmod` | Change permissions | Set permissions on jail directories | Medium - controlled paths |
+| `/usr/sbin/chown` | Change ownership | Set ownership on jail directories | Medium - controlled paths |
+| `/bin/sh` | Shell for complex ops | Writing files inside jails (heredoc), compound operations | High - see security notes |
+
+#### Security Considerations
+
+1. **Shell Access Risk**: The `/bin/sh` permission is the most permissive entry. It's required for operations like:
+   - Writing `resolv.conf` inside jails using heredoc syntax
+   - Creating `.claude.json` configuration files
+   - Complex operations that need shell features
+
+   **Mitigation**: The jail-runtime.ts code always uses explicit command strings with sudo (e.g., `sudo sh -c 'echo ...'`) rather than interactive shells. All inputs are from trusted sources (configuration, not user input).
+
+2. **ZFS Scope**: The `/sbin/zfs` permission allows any ZFS operation. This is necessary for cloning and destroying datasets.
+
+   **Mitigation**: The runtime only operates on datasets under `JAIL_CONFIG.jailsDataset` (default: `zroot/nanoclaw/jails/*`). Consider using a dedicated ZFS pool for jails if extremely high security is required.
+
+3. **Network Interface Creation**: The `/sbin/ifconfig` permission allows creating and destroying network interfaces.
+
+   **Mitigation**: Only epair interfaces are created/destroyed, with explicit numbering tracked in application state. Only required when `NANOCLAW_JAIL_NETWORK_MODE=restricted`.
+
+4. **Jail Escape Risk**: If an attacker compromises the orchestrator process, they gain the ability to execute these sudo commands.
+
+   **Mitigation**:
+   - Run the orchestrator as a non-privileged user
+   - Limit network exposure of the orchestrator
+   - Use filesystem permissions to protect configuration files
+   - Enable audit logging: `sudo sysrc auditd_enable=YES`
+
+5. **Argument Injection**: Commands like `jail`, `zfs`, and `mount_nullfs` accept arguments that could be manipulated.
+
+   **Mitigation**: The runtime validates and sanitizes jail names using `sanitizeJailName()`, which restricts to alphanumeric and underscore characters. Mount paths are validated to prevent path traversal.
+
+#### Network Mode Dependency
+
+Some commands are only required for specific network modes:
+
+- **Inherit mode** (`NANOCLAW_JAIL_NETWORK_MODE=inherit`): Does NOT require `/sbin/ifconfig` or `/sbin/route`
+- **Restricted mode** (`NANOCLAW_JAIL_NETWORK_MODE=restricted`): Requires all network commands for epair management
+
+If you only use inherit mode for development, you can remove the network commands from your sudoers file for reduced attack surface.
+
+#### Audit Logging
+
+To monitor sudo usage, enable FreeBSD's audit system:
+
+```sh
+# Enable audit
+sudo sysrc auditd_enable=YES
+sudo service auditd start
+
+# Review sudo commands
+sudo praudit /var/audit/* | grep sudo
+```
+
+This provides accountability for all privileged operations performed by the jail runtime.
+
+#### Alternative: Dedicated User
+
+For production deployments, consider creating a dedicated `nanoclaw` user instead of using your personal account:
+
+```sh
+# Create dedicated user
+sudo pw useradd nanoclaw -m -G wheel -s /bin/sh -c "NanoClaw Runtime"
+
+# Configure sudoers for this user
+sudo visudo /usr/local/etc/sudoers.d/nanoclaw
+# (use 'nanoclaw' instead of 'youruser')
+
+# Run the service as this user
+sudo -u nanoclaw npm run dev
+```
+
+This isolates NanoClaw's privileges from your personal account.
 
 ## 7. Template Management
 
