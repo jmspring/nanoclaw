@@ -1,6 +1,10 @@
 /**
  * Log Rotation Utilities
- * Manages jail/container log files with rotation and cleanup
+ * Manages NanoClaw agent log files with rotation and cleanup
+ *
+ * NOTE: Log files use the unified "nanoclaw-" prefix regardless of runtime
+ * (FreeBSD jails or Docker/Apple containers). This ensures consistent naming
+ * and simplifies log management across different deployment environments.
  */
 import fs from 'fs';
 import path from 'path';
@@ -19,11 +23,11 @@ const logStreams = new Map<string, RotatingFileStream>();
 
 /**
  * Get or create a rotating log stream for a logs directory.
- * Uses a single rotating stream per directory (jail-*.log or container-*.log pattern).
+ * Uses a single rotating stream per directory (nanoclaw-*.log pattern).
  */
 export function getRotatingLogStream(
   logsDir: string,
-  prefix: 'jail' | 'container',
+  prefix: 'nanoclaw',
 ): RotatingFileStream {
   const key = `${logsDir}:${prefix}`;
   let stream = logStreams.get(key);
@@ -77,7 +81,7 @@ export function getRotatingLogStream(
  */
 export function writeRotatingLog(
   logsDir: string,
-  prefix: 'jail' | 'container',
+  prefix: 'nanoclaw',
   content: string,
 ): void {
   const stream = getRotatingLogStream(logsDir, prefix);
@@ -97,7 +101,7 @@ export function writeRotatingLog(
  */
 async function cleanupOldLogs(
   logsDir: string,
-  prefix: 'jail' | 'container',
+  prefix: 'nanoclaw',
 ): Promise<void> {
   const now = Date.now();
   const cutoffTime = now - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
@@ -156,9 +160,8 @@ export async function cleanupAllGroupLogs(groupsDir: string): Promise<void> {
       const logsDir = path.join(groupsDir, group, 'logs');
       if (!fs.existsSync(logsDir)) continue;
 
-      // Cleanup both jail and container logs
-      await cleanupOldLogs(logsDir, 'jail');
-      await cleanupOldLogs(logsDir, 'container');
+      // Cleanup nanoclaw logs
+      await cleanupOldLogs(logsDir, 'nanoclaw');
     }
   } catch (err) {
     logger.warn({ groupsDir, err }, 'Error during periodic log cleanup');
