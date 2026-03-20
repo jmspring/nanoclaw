@@ -135,12 +135,31 @@ function buildJailMountPaths(
     'src',
   );
 
+  // Additional mounts validated against external allowlist (tamper-proof from containers)
+  let validatedAdditionalMounts:
+    | Array<{ hostPath: string; jailPath: string; readonly: boolean }>
+    | undefined;
+  if (group.containerConfig?.additionalMounts) {
+    const dockerMounts = validateAdditionalMounts(
+      group.containerConfig.additionalMounts,
+      group.name,
+      isMain,
+    );
+    // Convert Docker mount paths (/workspace/extra/...) to jail mount paths
+    validatedAdditionalMounts = dockerMounts.map((m) => ({
+      hostPath: m.hostPath,
+      jailPath: m.containerPath,
+      readonly: m.readonly,
+    }));
+  }
+
   return {
     projectPath: isMain ? projectRoot : null, // Only main gets project access
     groupPath: groupDir,
     ipcPath: groupIpcDir,
     claudeSessionPath: groupSessionsDir,
     agentRunnerPath: agentRunnerSrc,
+    additionalMounts: validatedAdditionalMounts,
   };
 }
 

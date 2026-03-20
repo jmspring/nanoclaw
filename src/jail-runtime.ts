@@ -30,6 +30,11 @@ export interface JailMountPaths {
   ipcPath: string;
   claudeSessionPath: string;
   agentRunnerPath: string;
+  additionalMounts?: Array<{
+    hostPath: string;
+    jailPath: string;
+    readonly: boolean;
+  }>;
 }
 
 /** Result of jail creation with paths */
@@ -725,6 +730,73 @@ export const JAIL_MOUNT_LAYOUT = {
  * @param paths - Semantic mount paths
  * @returns Array of mount specifications
  */
+/**
+ * Validate jail mount paths for security issues.
+ * Defense-in-depth: validates even if upstream validation should have occurred.
+ * @param mount - The mount to validate
+ * @throws Error if mount is unsafe
+ */
+function validateJailMount(mount: JailMount): void {
+  // Validate hostPath - must be absolute and cannot contain path traversal
+  if (!path.isAbsolute(mount.hostPath)) {
+    throw new Error(
+      `Security: jail mount hostPath must be absolute: "${mount.hostPath}"`,
+    );
+  }
+
+  // Check for path traversal in hostPath
+  const normalizedHostPath = path.normalize(mount.hostPath);
+  if (normalizedHostPath.includes('..')) {
+    throw new Error(
+      `Security: jail mount hostPath contains path traversal: "${mount.hostPath}"`,
+    );
+  }
+
+  // Resolve symlinks in hostPath to prevent escape via symlink
+  try {
+    const realHostPath = fs.realpathSync(mount.hostPath);
+    // Update mount to use real path
+    mount.hostPath = realHostPath;
+  } catch (err) {
+    throw new Error(
+      `Security: jail mount hostPath does not exist: "${mount.hostPath}"`,
+    );
+  }
+
+  // Validate jailPath - must be absolute and cannot contain path traversal
+  if (!path.isAbsolute(mount.jailPath)) {
+    throw new Error(
+      `Security: jail mount jailPath must be absolute: "${mount.jailPath}"`,
+    );
+  }
+
+  const normalizedJailPath = path.normalize(mount.jailPath);
+  if (normalizedJailPath.includes('..')) {
+    throw new Error(
+      `Security: jail mount jailPath contains path traversal: "${mount.jailPath}"`,
+    );
+  }
+
+  // Blocked paths - never allow mounting these (even if they pass allowlist)
+  const blockedPathPatterns = [
+    '/.ssh',
+    '/.gnupg',
+    '/.aws',
+    '/.docker',
+    '/etc/passwd',
+    '/etc/shadow',
+    '/root',
+  ];
+
+  for (const pattern of blockedPathPatterns) {
+    if (mount.hostPath.includes(pattern)) {
+      throw new Error(
+        `Security: jail mount hostPath matches blocked pattern "${pattern}": "${mount.hostPath}"`,
+      );
+    }
+  }
+}
+
 export function buildJailMounts(paths: JailMountPaths): JailMount[] {
   const mounts: JailMount[] = [];
 
@@ -766,6 +838,25 @@ export function buildJailMounts(paths: JailMountPaths): JailMount[] {
       jailPath: JAIL_MOUNT_LAYOUT.agentRunner,
       readonly: true,
     });
+  }
+
+  // Additional mounts - MUST be validated for security
+  // Defense-in-depth: validate even if buildJailMountPaths already validated
+  if (paths.additionalMounts) {
+    for (const mount of paths.additionalMounts) {
+      // Create a JailMount to validate
+      const jailMount: JailMount = {
+        hostPath: mount.hostPath,
+        jailPath: mount.jailPath,
+        readonly: mount.readonly,
+      };
+
+      // Validate for security issues (path traversal, symlinks, blocked paths)
+      validateJailMount(jailMount);
+
+      // Add validated mount (hostPath may have been updated to realpath)
+      mounts.push(jailMount);
+    }
   }
 
   return mounts;
