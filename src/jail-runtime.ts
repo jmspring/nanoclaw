@@ -6,6 +6,7 @@
 import { execFile, execFileSync, spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { logger } from './logger.js';
 import pino from 'pino';
 
@@ -214,9 +215,72 @@ async function retryWithBackoff<T>(
   throw lastError;
 }
 
-/** Sanitize groupId for use in jail names (alphanumeric + underscore only) */
+/**
+ * Sanitize groupId for use in jail names (alphanumeric + underscore only).
+ * Appends a 6-character hash suffix to prevent collisions when different
+ * groupIds sanitize to the same value (e.g., "my-group" and "my_group").
+ * @param groupId - The original group identifier
+ * @returns Sanitized jail name with hash suffix
+ */
 export function sanitizeJailName(groupId: string): string {
-  return groupId.replace(/[^a-zA-Z0-9_]/g, '_');
+  // Replace non-alphanumeric characters (except underscore) with underscore
+  const sanitized = groupId.replace(/[^a-zA-Z0-9_]/g, '_');
+
+  // Generate a short hash of the original groupId for uniqueness
+  // Use first 6 chars of SHA-256 hash (base36 for compact representation)
+  const hash = crypto
+    .createHash('sha256')
+    .update(groupId)
+    .digest('hex')
+    .slice(0, 6);
+
+  // Log warning if sanitization changed the name significantly
+  if (sanitized !== groupId) {
+    logger.debug(
+      { original: groupId, sanitized, hash },
+      'Group name sanitized for jail compatibility',
+    );
+  }
+
+  // Append hash to ensure uniqueness while keeping jail name readable
+  // Format: sanitized_hash (e.g., "my_group_a1b2c3")
+  return `${sanitized}_${hash}`;
+}
+
+/**
+ * Detect potential collision between group names.
+ * Warns if two group IDs would have collided without hash suffix.
+ * @param groupId1 - First group identifier
+ * @param groupId2 - Second group identifier
+ * @returns True if the sanitized names (without hash) would collide
+ */
+export function detectNameCollision(
+  groupId1: string,
+  groupId2: string,
+): boolean {
+  if (groupId1 === groupId2) {
+    return false; // Same group, not a collision
+  }
+
+  const sanitized1 = groupId1.replace(/[^a-zA-Z0-9_]/g, '_');
+  const sanitized2 = groupId2.replace(/[^a-zA-Z0-9_]/g, '_');
+
+  const wouldCollide = sanitized1 === sanitized2;
+
+  if (wouldCollide) {
+    logger.warn(
+      {
+        group1: groupId1,
+        group2: groupId2,
+        sanitizedBase: sanitized1,
+        jail1: getJailName(groupId1),
+        jail2: getJailName(groupId2),
+      },
+      'Potential group name collision detected (prevented by hash suffix)',
+    );
+  }
+
+  return wouldCollide;
 }
 
 /** Generate jail name from groupId */

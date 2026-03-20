@@ -369,10 +369,10 @@ test('create() with invalid groupId ("../escape") — error thrown, no orphaned 
   );
 
   // Verify the jail name is safe (each '/' becomes '_', so '../' becomes '___' + another '_' for '.')
-  assertEqual(
-    jailName,
-    'nanoclaw____escape',
-    `Jail name should sanitize '../' characters, got: ${jailName}`
+  // With hash suffix, the name format is: nanoclaw_<sanitized>_<hash>
+  assert(
+    jailName.startsWith('nanoclaw____escape_') && jailName.length === 'nanoclaw____escape_'.length + 6,
+    `Jail name should sanitize '../' characters and include 6-char hash suffix, got: ${jailName}`
   );
 
   // The create should work with the sanitized name (no escape possible)
