@@ -182,8 +182,9 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
           );
 
           // Parse jail IP to get gateway (e.g., 10.99.0.2 -> 10.99.0.1)
-          const jailIPMatch =
-            ifconfigResult.stdout.match(/inet (\d+\.\d+\.\d+)\.\d+/);
+          const jailIPMatch = ifconfigResult.stdout.match(
+            /inet (\d+\.\d+\.\d+)\.\d+/,
+          );
           expect(jailIPMatch).toBeTruthy();
 
           const gatewayIP = `${jailIPMatch![1]}.1`;
@@ -267,8 +268,9 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
             { timeout: 5000 },
           );
 
-          const jail2IPMatch =
-            jail2IPResult.stdout.match(/inet (\d+\.\d+\.\d+\.\d+)/);
+          const jail2IPMatch = jail2IPResult.stdout.match(
+            /inet (\d+\.\d+\.\d+\.\d+)/,
+          );
           expect(jail2IPMatch).toBeTruthy();
           const jail2IP = jail2IPMatch![1];
 
@@ -295,8 +297,9 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
             { timeout: 5000 },
           );
 
-          const jail1IPMatch =
-            jail1IPResult.stdout.match(/inet (\d+\.\d+\.\d+\.\d+)/);
+          const jail1IPMatch = jail1IPResult.stdout.match(
+            /inet (\d+\.\d+\.\d+\.\d+)/,
+          );
           expect(jail1IPMatch).toBeTruthy();
           const jail1IP = jail1IPMatch![1];
 
