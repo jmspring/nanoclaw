@@ -576,7 +576,7 @@ async function runJailAgent(
           `Exit Code: ${code}`,
           `Had Streaming Output: ${hadStreamingOutput}`,
         ].join('\n');
-        writeRotatingLog(logsDir, 'jail', logContent);
+        writeRotatingLog(logsDir, 'nanoclaw', logContent);
 
         if (hadStreamingOutput) {
           log.info(
@@ -657,7 +657,7 @@ async function runJailAgent(
         );
       }
 
-      writeRotatingLog(logsDir, 'jail', logLines.join('\n'));
+      writeRotatingLog(logsDir, 'nanoclaw', logLines.join('\n'));
       log.debug({ logsDir, verbose: isVerbose }, 'Jail log written');
 
       if (code !== 0) {
@@ -968,7 +968,7 @@ export async function runContainerAgent(
           `Exit Code: ${code}`,
           `Had Streaming Output: ${hadStreamingOutput}`,
         ].join('\n');
-        writeRotatingLog(logsDir, 'container', logContent);
+        writeRotatingLog(logsDir, 'nanoclaw', logContent);
 
         // Timeout after output = idle cleanup, not failure.
         // The agent already sent its response; this is just the
@@ -1055,7 +1055,7 @@ export async function runContainerAgent(
         );
       }
 
-      writeRotatingLog(logsDir, 'container', logLines.join('\n'));
+      writeRotatingLog(logsDir, 'nanoclaw', logLines.join('\n'));
       log.debug({ logsDir, verbose: isVerbose }, 'Container log written');
 
       if (code !== 0) {
