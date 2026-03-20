@@ -44,7 +44,7 @@ NanoClaw's FreeBSD jail runtime provides OS-level isolation for Claude agents. E
           | NANOCLAW_RUNTIME=jail
           v
    +------------------+
-   | jail-runtime.js  |
+   | jail-runtime.ts  |
    +------------------+
           |
      +---------+--------+--------+
@@ -226,7 +226,7 @@ flowchart TD
     subgraph "Message Flow"
         MSG[Message arrives from Telegram/Slack/etc] --> ORCH[Orchestrator<br/>src/index.ts]
         ORCH --> RUNNER[container-runner.ts]
-        RUNNER --> RUNTIME[jail-runtime.js]
+        RUNNER --> RUNTIME[jail-runtime.ts]
     end
 
     subgraph "ZFS Dataset Structure"
@@ -342,7 +342,7 @@ flowchart TD
 
 ```
 1. Message arrives at orchestrator
-2. container-runner.ts calls jail-runtime.js
+2. container-runner.ts calls jail-runtime.ts
 3. ZFS clone: zroot/nanoclaw/jails/template@base -> zroot/nanoclaw/jails/nanoclaw_groupname
 4. Create mount points inside jail
 5. nullfs mounts: project(ro), group(rw), ipc(rw), claude-session(rw), agent-runner(ro)
@@ -1026,7 +1026,7 @@ sudo jexec nanoclaw_groupname ls -la /dev
 | `IDLE_TIMEOUT` | `1800000` | Idle timeout in milliseconds (30 minutes) |
 | `LOG_LEVEL` | `info` | Logging level: trace, debug, info, warn, error |
 
-### jail-runtime.js Constants
+### jail-runtime.ts Constants
 
 ```javascript
 export const JAIL_CONFIG = {
@@ -1034,11 +1034,12 @@ export const JAIL_CONFIG = {
   templateSnapshot: 'base',
   jailsDataset: 'zroot/nanoclaw/jails',
   jailsPath: '/home/jims/code/nanoclaw/jails',  // ZFS mountpoint for jail clones
-  // Note: workspacesPath and ipcPath are NOT used by jail-runtime
-  // Paths are resolved by container-runner.ts using buildJailMountPaths()
+  workspacesPath: '/home/jims/code/nanoclaw/workspaces',  // Legacy - unused by jail runtime
+  ipcPath: '/home/jims/code/nanoclaw/ipc',  // Legacy - unused by jail runtime
+  // Note: Actual paths are resolved by container-runner.ts using buildJailMountPaths()
   networkMode: process.env.NANOCLAW_JAIL_NETWORK_MODE || 'inherit',
-  jailHostIP: '10.99.0.1',
-  jailIP: '10.99.0.2',
+  jailHostIP: '10.99.0.1',  // Legacy default - actual IPs calculated per-jail
+  jailIP: '10.99.0.2',  // Legacy default - actual IPs calculated per-jail
   jailNetmask: '30',
   resourceLimits: {
     memoryuse: process.env.NANOCLAW_JAIL_MEMORY_LIMIT || '2G',
@@ -1144,14 +1145,14 @@ youruser ALL=(ALL) NOPASSWD: /sbin/route
 # Resource limits (rctl)
 youruser ALL=(ALL) NOPASSWD: /usr/bin/rctl
 
-# Directory operations (used by jail-runtime.js)
+# Directory operations (used by jail-runtime.ts)
 youruser ALL=(ALL) NOPASSWD: /bin/mkdir
 youruser ALL=(ALL) NOPASSWD: /bin/chmod
 youruser ALL=(ALL) NOPASSWD: /usr/sbin/chown
 youruser ALL=(ALL) NOPASSWD: /bin/sh
 ```
 
-**Note**: The jail-runtime.js uses `sudo sh -c` for complex operations like writing files inside jails, so `/bin/sh` permission is required.
+**Note**: The jail-runtime.ts uses `sudo sh -c` for complex operations like writing files inside jails, so `/bin/sh` permission is required.
 
 ---
 
