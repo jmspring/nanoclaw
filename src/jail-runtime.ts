@@ -8,6 +8,13 @@ import fs from 'fs';
 import path from 'path';
 import { logger } from './logger.js';
 import pino from 'pino';
+import {
+  JAIL_EXEC_TIMEOUT,
+  JAIL_CREATE_TIMEOUT,
+  JAIL_STOP_TIMEOUT,
+  JAIL_FORCE_STOP_TIMEOUT,
+  JAIL_QUICK_OP_TIMEOUT,
+} from './config.js';
 
 /** Jail mount specification */
 export interface JailMount {
@@ -296,7 +303,7 @@ function sudoExec(
   options: SudoExecOptions = {},
 ): Promise<SudoExecResult> {
   return new Promise((resolve, reject) => {
-    const timeout = options.timeout || 30000;
+    const timeout = options.timeout || JAIL_EXEC_TIMEOUT;
     execFile('sudo', args, { timeout, ...options }, (error, stdout, stderr) => {
       if (error) {
         reject(
@@ -316,7 +323,7 @@ function sudoExecSync(args: string[], options: SudoExecOptions = {}): string {
   try {
     return execFileSync('sudo', args, {
       encoding: 'utf-8',
-      timeout: 30000,
+      timeout: JAIL_EXEC_TIMEOUT,
       ...options,
     });
   } catch (error) {
@@ -1124,7 +1131,7 @@ export async function execInJail(
         // Kill all processes in the jail - this ensures the jailed process dies
         execFileSync('sudo', ['jexec', jailName, 'kill', '-9', '-1'], {
           stdio: 'pipe',
-          timeout: 5000,
+          timeout: JAIL_QUICK_OP_TIMEOUT,
         });
       } catch {
         // Jail may have already stopped or no processes to kill
@@ -1270,7 +1277,7 @@ export async function stopJail(groupId: string): Promise<void> {
   logger.info({ jailName, groupId }, 'Stopping jail');
 
   try {
-    await sudoExec(['jail', '-r', jailName], { timeout: 15000 });
+    await sudoExec(['jail', '-r', jailName], { timeout: JAIL_STOP_TIMEOUT });
     logger.info({ jailName, groupId }, 'Jail stopped');
   } catch (error) {
     logger.warn(
@@ -1280,9 +1287,11 @@ export async function stopJail(groupId: string): Promise<void> {
     try {
       // Try to kill all processes in jail first
       await sudoExec(['jexec', jailName, 'kill', '-9', '-1'], {
-        timeout: 5000,
+        timeout: JAIL_QUICK_OP_TIMEOUT,
       }).catch(() => {});
-      await sudoExec(['jail', '-r', jailName], { timeout: 10000 });
+      await sudoExec(['jail', '-r', jailName], {
+        timeout: JAIL_FORCE_STOP_TIMEOUT,
+      });
       logger.info({ jailName, groupId }, 'Jail force stopped');
     } catch (forceError) {
       logger.error(
@@ -1319,7 +1328,7 @@ async function forceCleanup(
   if (isJailRunning(jailName)) {
     try {
       await sudoExec(['jexec', jailName, 'kill', '-9', '-1'], {
-        timeout: 5000,
+        timeout: JAIL_QUICK_OP_TIMEOUT,
       });
       logger.info({ jailName }, 'Killed all processes in jail');
       logCleanupAudit('KILL_PROCESSES', jailName, 'SUCCESS');
@@ -1331,7 +1340,9 @@ async function forceCleanup(
 
     // 2. Force stop jail
     try {
-      await sudoExec(['jail', '-r', jailName], { timeout: 10000 });
+      await sudoExec(['jail', '-r', jailName], {
+        timeout: JAIL_FORCE_STOP_TIMEOUT,
+      });
       logger.info({ jailName }, 'Force stopped jail');
       logCleanupAudit('FORCE_STOP_JAIL', jailName, 'SUCCESS');
     } catch (error) {
@@ -1344,7 +1355,7 @@ async function forceCleanup(
   // 3. Force unmount devfs
   try {
     await sudoExec(['umount', '-f', path.join(jailPath, 'dev')], {
-      timeout: 5000,
+      timeout: JAIL_QUICK_OP_TIMEOUT,
     });
     logger.debug({ jailName }, 'Force unmounted devfs');
     logCleanupAudit('FORCE_UNMOUNT_DEVFS', jailName, 'SUCCESS');
@@ -1361,7 +1372,9 @@ async function forceCleanup(
     const mount = mounts[i];
     const targetPath = path.join(jailPath, mount.jailPath);
     try {
-      await sudoExec(['umount', '-f', targetPath], { timeout: 5000 });
+      await sudoExec(['umount', '-f', targetPath], {
+        timeout: JAIL_QUICK_OP_TIMEOUT,
+      });
       logger.debug({ targetPath }, 'Force unmounted nullfs');
       logCleanupAudit('FORCE_UNMOUNT_NULLFS', jailName, 'SUCCESS', null);
     } catch (error) {
@@ -1375,7 +1388,7 @@ async function forceCleanup(
   if (datasetExists(dataset)) {
     try {
       await sudoExec(['zfs', 'destroy', '-f', '-r', dataset], {
-        timeout: 30000,
+        timeout: JAIL_CREATE_TIMEOUT,
       });
       logger.info({ dataset }, 'Force destroyed dataset');
       logCleanupAudit('FORCE_DESTROY_DATASET', jailName, 'SUCCESS');
@@ -1390,7 +1403,9 @@ async function forceCleanup(
   if (epairNum !== null) {
     try {
       const hostIface = `epair${epairNum}a`;
-      await sudoExec(['ifconfig', hostIface, 'destroy'], { timeout: 5000 });
+      await sudoExec(['ifconfig', hostIface, 'destroy'], {
+        timeout: JAIL_QUICK_OP_TIMEOUT,
+      });
       logger.info({ epairNum, hostIface }, 'Force destroyed epair');
       logCleanupAudit('FORCE_DESTROY_EPAIR', jailName, 'SUCCESS');
     } catch (error) {
@@ -1672,17 +1687,17 @@ export function isAtJailCapacity(): boolean {
 export function ensureJailRuntimeRunning(): void {
   try {
     // Check ZFS is available
-    execFileSync('zfs', ['version'], { stdio: 'pipe', timeout: 5000 });
+    execFileSync('zfs', ['version'], { stdio: 'pipe', timeout: JAIL_QUICK_OP_TIMEOUT });
 
     // Check template snapshot exists
     const snapshot = `${JAIL_CONFIG.templateDataset}@${JAIL_CONFIG.templateSnapshot}`;
     execFileSync('zfs', ['list', '-t', 'snapshot', '-H', snapshot], {
       stdio: 'pipe',
-      timeout: 5000,
+      timeout: JAIL_QUICK_OP_TIMEOUT,
     });
 
     // Check jail command is available
-    execFileSync('which', ['jail'], { stdio: 'pipe', timeout: 5000 });
+    execFileSync('which', ['jail'], { stdio: 'pipe', timeout: JAIL_QUICK_OP_TIMEOUT });
 
     // Restore epair state from disk for crash recovery
     if (JAIL_CONFIG.networkMode === 'restricted') {
@@ -1722,7 +1737,7 @@ export function cleanupOrphans(): void {
       try {
         execFileSync('sudo', ['rctl', '-r', `jail:${jailName}`], {
           stdio: 'pipe',
-          timeout: 5000,
+          timeout: JAIL_QUICK_OP_TIMEOUT,
         });
         logger.info({ jailName }, 'Removed rctl limits for orphaned jail');
       } catch {
@@ -1733,7 +1748,7 @@ export function cleanupOrphans(): void {
         logger.info({ jailName }, 'Stopping orphaned jail');
         execFileSync('sudo', ['jail', '-r', jailName], {
           stdio: 'pipe',
-          timeout: 15000,
+          timeout: JAIL_STOP_TIMEOUT,
         });
         logger.info({ jailName }, 'Stopped orphaned jail');
       } catch {
@@ -1765,7 +1780,7 @@ export function cleanupOrphans(): void {
           try {
             execFileSync('sudo', ['umount', '-f', mountPoint], {
               stdio: 'pipe',
-              timeout: 5000,
+              timeout: JAIL_QUICK_OP_TIMEOUT,
             });
             logger.debug({ mountPoint }, 'Unmounted orphan mount');
           } catch {
@@ -1782,7 +1797,7 @@ export function cleanupOrphans(): void {
         try {
           execFileSync('sudo', ['zfs', 'destroy', '-r', dataset], {
             stdio: 'pipe',
-            timeout: 15000,
+            timeout: JAIL_STOP_TIMEOUT,
           });
           logger.info({ dataset }, 'Destroyed orphan dataset');
         } catch {
@@ -1828,7 +1843,7 @@ export function cleanupOrphans(): void {
               try {
                 execFileSync('sudo', ['ifconfig', iface, 'destroy'], {
                   stdio: 'pipe',
-                  timeout: 5000,
+                  timeout: JAIL_QUICK_OP_TIMEOUT,
                 });
                 logger.info({ epairNum, iface }, 'Destroyed orphan epair');
               } catch {
@@ -1897,7 +1912,9 @@ export async function cleanupAllJails(): Promise<void> {
 
     // Step 0: Remove rctl limits
     try {
-      await sudoExec(['rctl', '-r', `jail:${jailName}`], { timeout: 5000 });
+      await sudoExec(['rctl', '-r', `jail:${jailName}`], {
+        timeout: JAIL_QUICK_OP_TIMEOUT,
+      });
       logger.debug({ jailName }, 'Removed rctl limits');
     } catch (err) {
       logger.warn(
@@ -1909,7 +1926,7 @@ export async function cleanupAllJails(): Promise<void> {
     // Step 1: Stop the jail
     try {
       logger.info({ jailName }, 'Stopping jail');
-      await sudoExec(['jail', '-r', jailName], { timeout: 15000 });
+      await sudoExec(['jail', '-r', jailName], { timeout: JAIL_STOP_TIMEOUT });
       logger.info({ jailName }, 'Stopped jail');
     } catch (err) {
       logger.warn({ jailName, err }, 'Failed to stop jail, continuing cleanup');
@@ -1918,7 +1935,7 @@ export async function cleanupAllJails(): Promise<void> {
     // Step 2: Unmount devfs
     try {
       await sudoExec(['umount', '-f', path.join(jailPath, 'dev')], {
-        timeout: 5000,
+        timeout: JAIL_QUICK_OP_TIMEOUT,
       });
       logger.debug({ jailName }, 'Unmounted devfs');
     } catch (err) {
@@ -1943,7 +1960,9 @@ export async function cleanupAllJails(): Promise<void> {
 
       for (const mountPoint of jailMounts) {
         try {
-          await sudoExec(['umount', '-f', mountPoint], { timeout: 5000 });
+          await sudoExec(['umount', '-f', mountPoint], {
+            timeout: JAIL_QUICK_OP_TIMEOUT,
+          });
           logger.debug({ mountPoint }, 'Unmounted nullfs');
         } catch (err) {
           logger.warn(
@@ -1959,7 +1978,9 @@ export async function cleanupAllJails(): Promise<void> {
     // Step 4: Destroy ZFS dataset
     if (datasetExists(dataset)) {
       try {
-        await sudoExec(['zfs', 'destroy', '-r', dataset], { timeout: 30000 });
+        await sudoExec(['zfs', 'destroy', '-r', dataset], {
+          timeout: JAIL_CREATE_TIMEOUT,
+        });
         logger.info({ dataset }, 'Destroyed ZFS dataset');
       } catch (err) {
         logger.warn(
