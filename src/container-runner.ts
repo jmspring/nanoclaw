@@ -794,7 +794,15 @@ export async function runContainerAgent(
   if (runtime === 'jail') {
     // Jail path uses semantic mount paths, not Docker VolumeMount[]
     // Does NOT call buildVolumeMounts, buildContainerArgs, or any Docker code
-    return runJailAgent(group, input, logsDir, onProcess, onOutput, traceId, tracedLogger);
+    return runJailAgent(
+      group,
+      input,
+      logsDir,
+      onProcess,
+      onOutput,
+      traceId,
+      tracedLogger,
+    );
   }
 
   // Docker path only below this point

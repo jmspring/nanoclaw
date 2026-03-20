@@ -1006,10 +1006,7 @@ export async function createJail(
     try {
       await sudoExec(['zfs', 'destroy', '-r', dataset]);
     } catch (error) {
-      log.warn(
-        { dataset, err: error },
-        'Could not destroy existing dataset',
-      );
+      log.warn({ dataset, err: error }, 'Could not destroy existing dataset');
     }
   }
 
