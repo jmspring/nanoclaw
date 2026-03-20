@@ -134,12 +134,12 @@ jexec_cmd() {
     sudo jexec "$TEMP_JAIL_NAME" "$@"
 }
 
-# Install global npm packages
+# Install global npm packages with pinned versions for supply chain security
 log "Installing TypeScript globally..."
-jexec_cmd npm install -g typescript
+jexec_cmd npm install -g typescript@5.7.3
 
 log "Installing Claude Code CLI globally..."
-jexec_cmd npm install -g @anthropic-ai/claude-code
+jexec_cmd npm install -g @anthropic-ai/claude-code@0.2.76
 
 # Create /app directory structure
 log "Creating /app directory structure..."
@@ -148,13 +148,29 @@ jexec_cmd mkdir -p /app/src
 # Copy agent-runner files into the jail
 log "Copying agent-runner source files..."
 sudo cp "$AGENT_RUNNER_SRC/package.json" "$TEMPLATE_PATH/app/"
-sudo cp "$AGENT_RUNNER_SRC/package-lock.json" "$TEMPLATE_PATH/app/" 2>/dev/null || true
 sudo cp "$AGENT_RUNNER_SRC/tsconfig.json" "$TEMPLATE_PATH/app/"
 sudo cp -r "$AGENT_RUNNER_SRC/src/"* "$TEMPLATE_PATH/app/src/"
 
-# Install agent-runner dependencies
-log "Installing agent-runner dependencies (this may take a moment)..."
-jexec_cmd sh -c 'cd /app && npm install'
+# Copy package-lock.json (required for reproducible builds)
+if [ ! -f "$AGENT_RUNNER_SRC/package-lock.json" ]; then
+    error "package-lock.json not found in agent-runner source.
+  Generate it with: cd $AGENT_RUNNER_SRC && npm install"
+fi
+sudo cp "$AGENT_RUNNER_SRC/package-lock.json" "$TEMPLATE_PATH/app/"
+
+# Install agent-runner dependencies with integrity verification
+# Using npm ci instead of npm install for:
+#   - Reproducible builds from package-lock.json
+#   - Integrity hash verification for supply chain security
+#   - Fails if package.json and package-lock.json are out of sync
+# To update dependencies:
+#   1. cd container/agent-runner
+#   2. npm install <package>@<version>
+#   3. npm audit fix (if needed)
+#   4. Commit updated package.json and package-lock.json
+#   5. Re-run this script
+log "Installing agent-runner dependencies with integrity verification..."
+jexec_cmd sh -c 'cd /app && npm ci'
 
 # Pre-compile TypeScript in template (nan-fmb6: reduces per-jail overhead)
 log "Pre-compiling TypeScript in template..."
