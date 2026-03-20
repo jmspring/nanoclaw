@@ -38,5 +38,6 @@ groups/global/*
 # Jail runtime artifacts
 jails/
 groups/*/logs/jail-*.log
+groups/*/logs/nanoclaw-*.log
 
 agents-sdk-docs
