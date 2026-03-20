@@ -18,6 +18,7 @@ import {
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
+import pino from 'pino';
 import {
   CONTAINER_HOST_GATEWAY,
   CONTAINER_RUNTIME_BIN,
@@ -51,6 +52,7 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  traceId?: string;
 }
 
 interface VolumeMount {
@@ -362,8 +364,11 @@ async function runJailAgent(
   logsDir: string,
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  traceId?: string,
+  tracedLogger?: pino.Logger,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
+  const log = tracedLogger || logger;
 
   const jailRuntime = await import('./jail-runtime.js');
 
@@ -391,7 +396,7 @@ async function runJailAgent(
     env.CLAUDE_CODE_OAUTH_TOKEN = 'placeholder';
   }
 
-  logger.info(
+  log.info(
     { group: group.name, mountPaths },
     'Creating jail with semantic paths',
   );
@@ -407,15 +412,18 @@ async function runJailAgent(
     const result = await jailRuntime.createJailWithPaths(
       group.folder,
       mountPaths,
+      traceId,
+      tracedLogger,
     );
     jailName = result.jailName;
     jailMounts = result.mounts;
   } catch (err) {
-    logger.error({ group: group.name, err }, 'Failed to create jail');
+    log.error({ group: group.name, err }, 'Failed to create jail');
     return {
       status: 'error',
       result: null,
       error: `Failed to create jail: ${err instanceof Error ? err.message : String(err)}`,
+      traceId,
     };
   }
 
@@ -464,11 +472,11 @@ async function runJailAgent(
 
     const killJail = async () => {
       timedOut = true;
-      logger.error({ group: group.name, jailName }, 'Jail timeout, stopping');
+      log.error({ group: group.name, jailName }, 'Jail timeout, stopping');
       try {
         await jailRuntime.stopJail(group.folder);
       } catch (err) {
-        logger.warn({ group: group.name, err }, 'Failed to stop jail');
+        log.warn({ group: group.name, err }, 'Failed to stop jail');
         proc.kill('SIGKILL');
       }
     };
@@ -488,7 +496,7 @@ async function runJailAgent(
         if (chunk.length > remaining) {
           stdout += chunk.slice(0, remaining);
           stdoutTruncated = true;
-          logger.warn(
+          log.warn(
             { group: group.name, size: stdout.length },
             'Jail stdout truncated due to size limit',
           );
@@ -518,7 +526,7 @@ async function runJailAgent(
             resetTimeout();
             outputChain = outputChain.then(() => onOutput(parsed));
           } catch (err) {
-            logger.warn(
+            log.warn(
               { group: group.name, error: err },
               'Failed to parse streamed output chunk',
             );
@@ -531,14 +539,14 @@ async function runJailAgent(
       const chunk = data.toString();
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
-        if (line) logger.debug({ jail: group.folder }, line);
+        if (line) log.debug({ jail: group.folder }, line);
       }
       if (stderrTruncated) return;
       const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
       if (chunk.length > remaining) {
         stderr += chunk.slice(0, remaining);
         stderrTruncated = true;
-        logger.warn(
+        log.warn(
           { group: group.name, size: stderr.length },
           'Jail stderr truncated due to size limit',
         );
@@ -555,7 +563,7 @@ async function runJailAgent(
       try {
         await jailRuntime.destroyJail(group.folder, jailMounts);
       } catch (err) {
-        logger.warn({ group: group.name, err }, 'Failed to destroy jail');
+        log.warn({ group: group.name, err }, 'Failed to destroy jail');
       }
 
       if (timedOut) {
@@ -571,7 +579,7 @@ async function runJailAgent(
         writeRotatingLog(logsDir, 'jail', logContent);
 
         if (hadStreamingOutput) {
-          logger.info(
+          log.info(
             { group: group.name, jailName, duration, code },
             'Jail timed out after output (idle cleanup)',
           );
@@ -585,7 +593,7 @@ async function runJailAgent(
           return;
         }
 
-        logger.error(
+        log.error(
           { group: group.name, jailName, duration, code },
           'Jail timed out with no output',
         );
@@ -594,6 +602,7 @@ async function runJailAgent(
           status: 'error',
           result: null,
           error: `Jail timed out after ${configTimeout}ms`,
+          traceId,
         });
         return;
       }
@@ -649,10 +658,10 @@ async function runJailAgent(
       }
 
       writeRotatingLog(logsDir, 'jail', logLines.join('\n'));
-      logger.debug({ logsDir, verbose: isVerbose }, 'Jail log written');
+      log.debug({ logsDir, verbose: isVerbose }, 'Jail log written');
 
       if (code !== 0) {
-        logger.error(
+        log.error(
           {
             group: group.name,
             code,
@@ -668,6 +677,7 @@ async function runJailAgent(
           status: 'error',
           result: null,
           error: `Jail exited with code ${code}: ${stderr.slice(-200)}`,
+          traceId,
         });
         return;
       }
@@ -675,7 +685,7 @@ async function runJailAgent(
       // Streaming mode: wait for output chain to settle
       if (onOutput) {
         outputChain.then(() => {
-          logger.info(
+          log.info(
             { group: group.name, duration, newSessionId },
             'Jail completed (streaming mode)',
           );
@@ -705,7 +715,7 @@ async function runJailAgent(
 
         const output: ContainerOutput = JSON.parse(jsonLine);
 
-        logger.info(
+        log.info(
           {
             group: group.name,
             duration,
@@ -717,7 +727,7 @@ async function runJailAgent(
 
         resolve(output);
       } catch (err) {
-        logger.error(
+        log.error(
           {
             group: group.name,
             stdout,
@@ -731,13 +741,14 @@ async function runJailAgent(
           status: 'error',
           result: null,
           error: `Failed to parse jail output: ${err instanceof Error ? err.message : String(err)}`,
+          traceId,
         });
       }
     });
 
     proc.on('error', async (err: Error) => {
       clearTimeout(timeout);
-      logger.error(
+      log.error(
         { group: group.name, jailName, error: err },
         'Jail spawn error',
       );
@@ -746,7 +757,7 @@ async function runJailAgent(
       try {
         await jailRuntime.destroyJail(group.folder, jailMounts);
       } catch (cleanupErr) {
-        logger.warn(
+        log.warn(
           { group: group.name, cleanupErr },
           'Failed to destroy jail after error',
         );
@@ -756,6 +767,7 @@ async function runJailAgent(
         status: 'error',
         result: null,
         error: `Jail spawn error: ${err.message}`,
+        traceId,
       });
     });
   });
@@ -766,7 +778,10 @@ export async function runContainerAgent(
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  traceId?: string,
+  tracedLogger?: pino.Logger,
 ): Promise<ContainerOutput> {
+  const log = tracedLogger || logger;
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
@@ -779,7 +794,7 @@ export async function runContainerAgent(
   if (runtime === 'jail') {
     // Jail path uses semantic mount paths, not Docker VolumeMount[]
     // Does NOT call buildVolumeMounts, buildContainerArgs, or any Docker code
-    return runJailAgent(group, input, logsDir, onProcess, onOutput);
+    return runJailAgent(group, input, logsDir, onProcess, onOutput, traceId, tracedLogger);
   }
 
   // Docker path only below this point
@@ -790,7 +805,7 @@ export async function runContainerAgent(
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName);
 
-  logger.debug(
+  log.debug(
     {
       group: group.name,
       containerName,
@@ -803,7 +818,7 @@ export async function runContainerAgent(
     'Container mount configuration',
   );
 
-  logger.info(
+  log.info(
     {
       group: group.name,
       containerName,
@@ -842,7 +857,7 @@ export async function runContainerAgent(
         if (chunk.length > remaining) {
           stdout += chunk.slice(0, remaining);
           stdoutTruncated = true;
-          logger.warn(
+          log.warn(
             { group: group.name, size: stdout.length },
             'Container stdout truncated due to size limit',
           );
@@ -876,7 +891,7 @@ export async function runContainerAgent(
             // so idle timers start even for "silent" query completions.
             outputChain = outputChain.then(() => onOutput(parsed));
           } catch (err) {
-            logger.warn(
+            log.warn(
               { group: group.name, error: err },
               'Failed to parse streamed output chunk',
             );
@@ -889,7 +904,7 @@ export async function runContainerAgent(
       const chunk = data.toString();
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
-        if (line) logger.debug({ container: group.folder }, line);
+        if (line) log.debug({ container: group.folder }, line);
       }
       // Don't reset timeout on stderr — SDK writes debug logs continuously.
       // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
@@ -898,7 +913,7 @@ export async function runContainerAgent(
       if (chunk.length > remaining) {
         stderr += chunk.slice(0, remaining);
         stderrTruncated = true;
-        logger.warn(
+        log.warn(
           { group: group.name, size: stderr.length },
           'Container stderr truncated due to size limit',
         );
@@ -916,13 +931,13 @@ export async function runContainerAgent(
 
     const killOnTimeout = () => {
       timedOut = true;
-      logger.error(
+      log.error(
         { group: group.name, containerName },
         'Container timeout, stopping gracefully',
       );
       exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
         if (err) {
-          logger.warn(
+          log.warn(
             { group: group.name, containerName, err },
             'Graceful stop failed, force killing',
           );
@@ -959,7 +974,7 @@ export async function runContainerAgent(
         // The agent already sent its response; this is just the
         // container being reaped after the idle period expired.
         if (hadStreamingOutput) {
-          logger.info(
+          log.info(
             { group: group.name, containerName, duration, code },
             'Container timed out after output (idle cleanup)',
           );
@@ -973,7 +988,7 @@ export async function runContainerAgent(
           return;
         }
 
-        logger.error(
+        log.error(
           { group: group.name, containerName, duration, code },
           'Container timed out with no output',
         );
@@ -982,6 +997,7 @@ export async function runContainerAgent(
           status: 'error',
           result: null,
           error: `Container timed out after ${configTimeout}ms`,
+          traceId,
         });
         return;
       }
@@ -1040,10 +1056,10 @@ export async function runContainerAgent(
       }
 
       writeRotatingLog(logsDir, 'container', logLines.join('\n'));
-      logger.debug({ logsDir, verbose: isVerbose }, 'Container log written');
+      log.debug({ logsDir, verbose: isVerbose }, 'Container log written');
 
       if (code !== 0) {
-        logger.error(
+        log.error(
           {
             group: group.name,
             code,
@@ -1059,6 +1075,7 @@ export async function runContainerAgent(
           status: 'error',
           result: null,
           error: `Container exited with code ${code}: ${stderr.slice(-200)}`,
+          traceId,
         });
         return;
       }
@@ -1066,7 +1083,7 @@ export async function runContainerAgent(
       // Streaming mode: wait for output chain to settle, return completion marker
       if (onOutput) {
         outputChain.then(() => {
-          logger.info(
+          log.info(
             { group: group.name, duration, newSessionId },
             'Container completed (streaming mode)',
           );
@@ -1098,7 +1115,7 @@ export async function runContainerAgent(
 
         const output: ContainerOutput = JSON.parse(jsonLine);
 
-        logger.info(
+        log.info(
           {
             group: group.name,
             duration,
@@ -1110,7 +1127,7 @@ export async function runContainerAgent(
 
         resolve(output);
       } catch (err) {
-        logger.error(
+        log.error(
           {
             group: group.name,
             stdout,
@@ -1124,13 +1141,14 @@ export async function runContainerAgent(
           status: 'error',
           result: null,
           error: `Failed to parse container output: ${err instanceof Error ? err.message : String(err)}`,
+          traceId,
         });
       }
     });
 
     container.on('error', (err) => {
       clearTimeout(timeout);
-      logger.error(
+      log.error(
         { group: group.name, containerName, error: err },
         'Container spawn error',
       );
@@ -1138,6 +1156,7 @@ export async function runContainerAgent(
         status: 'error',
         result: null,
         error: `Container spawn error: ${err.message}`,
+        traceId,
       });
     });
   });

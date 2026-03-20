@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import pino from 'pino';
 
 import {
   ASSISTANT_NAME,
@@ -58,7 +59,7 @@ import {
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
-import { logger } from './logger.js';
+import { logger, generateTraceId, createTracedLogger } from './logger.js';
 import { startMetricsServer, updateMetrics } from './metrics.js';
 import { cleanupAllGroupLogs, closeAllLogStreams } from './log-rotation.js';
 
@@ -150,12 +151,16 @@ export function _setRegisteredGroups(
  * Called by the GroupQueue when it's this group's turn.
  */
 async function processGroupMessages(chatJid: string): Promise<boolean> {
+  // Generate trace ID for this request
+  const traceId = generateTraceId();
+  const tracedLogger = createTracedLogger(traceId, { chatJid });
+
   const group = registeredGroups[chatJid];
   if (!group) return true;
 
   const channel = findChannel(channels, chatJid);
   if (!channel) {
-    logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
+    tracedLogger.warn({ chatJid }, 'No channel owns JID, skipping messages');
     return true;
   }
 
@@ -190,7 +195,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     missedMessages[missedMessages.length - 1].timestamp;
   saveState();
 
-  logger.info(
+  tracedLogger.info(
     { group: group.name, messageCount: missedMessages.length },
     'Processing messages',
   );
@@ -201,7 +206,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      logger.debug(
+      tracedLogger.debug(
         { group: group.name },
         'Idle timeout, closing container stdin',
       );
@@ -213,7 +218,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, traceId, tracedLogger, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -222,7 +227,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           : JSON.stringify(result.result);
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
+      tracedLogger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
@@ -247,7 +252,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
-      logger.warn(
+      tracedLogger.warn(
         { group: group.name },
         'Agent error after output was sent, skipping cursor rollback to prevent duplicates',
       );
@@ -256,7 +261,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // Roll back cursor so retries can re-process these messages
     lastAgentTimestamp[chatJid] = previousCursor;
     saveState();
-    logger.warn(
+    tracedLogger.warn(
       { group: group.name },
       'Agent error, rolled back message cursor for retry',
     );
@@ -270,6 +275,8 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  traceId: string,
+  tracedLogger: pino.Logger,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
@@ -325,6 +332,8 @@ async function runAgent(
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
+      traceId,
+      tracedLogger,
     );
 
     if (output.newSessionId) {
@@ -333,7 +342,7 @@ async function runAgent(
     }
 
     if (output.status === 'error') {
-      logger.error(
+      tracedLogger.error(
         { group: group.name, error: output.error },
         'Container agent error',
       );
@@ -342,7 +351,7 @@ async function runAgent(
 
     return 'success';
   } catch (err) {
-    logger.error({ group: group.name, err }, 'Agent error');
+    tracedLogger.error({ group: group.name, err }, 'Agent error');
     return 'error';
   }
 }

@@ -7,6 +7,7 @@ import { execFile, execFileSync, spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { logger } from './logger.js';
+import pino from 'pino';
 
 /** Jail mount specification */
 export interface JailMount {
@@ -862,12 +863,18 @@ async function unmountAll(
  * This is the preferred entry point for jail creation - no Docker translation needed.
  * @param groupId - The group identifier
  * @param paths - Semantic mount paths
+ * @param traceId - Optional trace ID for request correlation
+ * @param tracedLogger - Optional traced logger for request correlation
  * @returns Promise with jail name and mount specs for cleanup
  */
 export async function createJailWithPaths(
   groupId: string,
   paths: JailMountPaths,
+  traceId?: string,
+  tracedLogger?: pino.Logger,
 ): Promise<JailCreationResult> {
+  const log = tracedLogger || logger;
+
   // Ensure host directories exist
   ensureHostDirectories(paths);
 
@@ -875,7 +882,7 @@ export async function createJailWithPaths(
   const mounts = buildJailMounts(paths);
 
   // Create the jail
-  const jailName = await createJail(groupId, mounts);
+  const jailName = await createJail(groupId, mounts, traceId, tracedLogger);
 
   return { jailName, mounts };
 }
@@ -884,12 +891,17 @@ export async function createJailWithPaths(
  * Create a new jail from template snapshot.
  * @param groupId - The group identifier
  * @param mounts - Mount specifications
+ * @param traceId - Optional trace ID for request correlation
+ * @param tracedLogger - Optional traced logger for request correlation
  * @returns Promise with the jail name
  */
 export async function createJail(
   groupId: string,
   mounts: JailMount[] = [],
+  traceId?: string,
+  tracedLogger?: pino.Logger,
 ): Promise<string> {
+  const log = tracedLogger || logger;
   const jailName = getJailName(groupId);
   const dataset = getJailDataset(jailName);
   const jailPath = getJailPath(jailName);
@@ -904,21 +916,21 @@ export async function createJail(
     );
   }
 
-  logger.info({ jailName, groupId }, 'Creating jail');
+  log.info({ jailName, groupId }, 'Creating jail');
 
   // Check if jail already exists
   if (isJailRunning(jailName)) {
-    logger.info({ jailName }, 'Jail already running, stopping first');
+    log.info({ jailName }, 'Jail already running, stopping first');
     await stopJail(groupId);
   }
 
   // Check if dataset exists (leftover from crash)
   if (datasetExists(dataset)) {
-    logger.info({ dataset }, 'Dataset exists, destroying first');
+    log.info({ dataset }, 'Dataset exists, destroying first');
     try {
       await sudoExec(['zfs', 'destroy', '-r', dataset]);
     } catch (error) {
-      logger.warn(
+      log.warn(
         { dataset, err: error },
         'Could not destroy existing dataset',
       );
@@ -927,7 +939,7 @@ export async function createJail(
 
   try {
     // Clone template snapshot
-    logger.debug({ snapshot, dataset }, 'Cloning template');
+    log.debug({ snapshot, dataset }, 'Cloning template');
     await sudoExec(['zfs', 'clone', snapshot, dataset]);
 
     // Create mount points inside jail
@@ -936,7 +948,7 @@ export async function createJail(
     // Write fstab for this jail
     const fstabContent = buildFstab(mounts, jailPath);
     fs.writeFileSync(fstabPath, fstabContent);
-    logger.debug({ fstabPath, mountCount: mounts.length }, 'Wrote fstab');
+    log.debug({ fstabPath, mountCount: mounts.length }, 'Wrote fstab');
 
     // Mount nullfs filesystems
     await mountNullfs(mounts, jailPath);
@@ -958,7 +970,7 @@ export async function createJail(
     if (JAIL_CONFIG.networkMode === 'restricted') {
       // Create epair interface pair
       epairInfo = await createEpair(groupId);
-      logger.info({ groupId, ...epairInfo }, 'Created epair for jail');
+      log.info({ groupId, ...epairInfo }, 'Created epair for jail');
 
       // Setup resolv.conf for DNS
       await setupJailResolv(jailPath);
@@ -994,7 +1006,7 @@ export async function createJail(
       'devfs_ruleset=10', // Apply restrictive devfs ruleset (see etc/devfs.rules)
     );
 
-    logger.debug({ jailName, params: jailParams.slice(2) }, 'Starting jail');
+    log.debug({ jailName, params: jailParams.slice(2) }, 'Starting jail');
     await sudoExec(jailParams);
 
     // Apply resource limits to prevent runaway processes
@@ -1008,7 +1020,7 @@ export async function createJail(
     // Track active jail
     activeJails.add(groupId);
 
-    logger.info(
+    log.info(
       {
         jailName,
         groupId,
@@ -1036,7 +1048,7 @@ export async function createJail(
     }
 
     // Cleanup on failure
-    logger.error(
+    log.error(
       { jailName, groupId, err: error },
       'Jail creation failed, cleaning up',
     );
