@@ -436,6 +436,10 @@ async function runJailAgent(
     );
     jailName = result.jailName;
     jailMounts = result.mounts;
+
+    // Track temp files that will be created during compilation/execution
+    jailRuntime.trackJailTempFile(group.folder, '/tmp/dist');
+    jailRuntime.trackJailTempFile(group.folder, '/tmp/input.json');
   } catch (err) {
     log.error({ group: group.name, err }, 'Failed to create jail');
     return {
