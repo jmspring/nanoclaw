@@ -546,8 +546,9 @@ sudo pfctl -f /etc/pf.conf
 #### pf Rules Explained
 
 ```
-# External interface (change for your system - em0, igb0, etc.)
-ext_if = "re0"
+# External interface (auto-detected by setup script, or manually configure)
+# To detect: route -n get default | grep 'interface:' | awk '{print $2}'
+ext_if = "re0"  # Example - will be auto-detected by scripts/setup-freebsd.sh
 
 # Jail network
 jail_net = "10.99.0.0/30"
@@ -921,8 +922,14 @@ export const JAIL_CONFIG = {
 Key customization points:
 
 ```
-# Change external interface (line ~70)
-ext_if = "re0"  # Change to em0, igb0, etc.
+# Configure external interface (see pf-nanoclaw.conf line ~114)
+# Option 1: Auto-detect via setup script (recommended)
+#   scripts/setup-freebsd.sh
+#   The script automatically detects using: route -n get default | grep 'interface:'
+#
+# Option 2: Manual edit
+ext_if = "em0"  # Replace NANOCLAW_EXT_IF_PLACEHOLDER with your interface
+#                 Common values: re0, em0, igb0, bge0, vtnet0
 
 # Add allowed destinations (before block rule)
 table <my_api> persist { api.example.com }
@@ -976,5 +983,5 @@ youruser ALL=(ALL) NOPASSWD: /bin/sh
 - **Test system**: This documentation was developed on FreeBSD 15.0-RELEASE amd64
 - **ZFS pool**: Examples use `zroot` — adjust for your pool name (check with `zfs list`)
 - **User**: Examples use `youruser` — replace with your actual username
-- **Interface**: Examples use `re0` — check your interface with `ifconfig` or `route get 8.8.8.8`
+- **Interface**: Examples use `re0` — auto-detected by setup script, or check manually with `route -n get default | grep 'interface:'`
 - **Working directory**: All commands assume you're in `/path/to/nanoclaw/src` (not the repo root)
