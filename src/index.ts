@@ -1,10 +1,14 @@
 import fs from 'fs';
 import path from 'path';
+import pino from 'pino';
 
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
+  GROUPS_DIR,
   IDLE_TIMEOUT,
+  METRICS_ENABLED,
+  METRICS_PORT,
   POLL_INTERVAL,
   TIMEZONE,
   TRIGGER_PATTERN,
@@ -55,7 +59,9 @@ import {
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
-import { logger } from './logger.js';
+import { logger, generateTraceId, createTracedLogger } from './logger.js';
+import { startMetricsServer, updateMetrics } from './metrics.js';
+import { cleanupAllGroupLogs, closeAllLogStreams } from './log-rotation.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -145,12 +151,16 @@ export function _setRegisteredGroups(
  * Called by the GroupQueue when it's this group's turn.
  */
 async function processGroupMessages(chatJid: string): Promise<boolean> {
+  // Generate trace ID for this request
+  const traceId = generateTraceId();
+  const tracedLogger = createTracedLogger(traceId, { chatJid });
+
   const group = registeredGroups[chatJid];
   if (!group) return true;
 
   const channel = findChannel(channels, chatJid);
   if (!channel) {
-    logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
+    tracedLogger.warn({ chatJid }, 'No channel owns JID, skipping messages');
     return true;
   }
 
@@ -185,7 +195,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     missedMessages[missedMessages.length - 1].timestamp;
   saveState();
 
-  logger.info(
+  tracedLogger.info(
     { group: group.name, messageCount: missedMessages.length },
     'Processing messages',
   );
@@ -196,7 +206,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      logger.debug(
+      tracedLogger.debug(
         { group: group.name },
         'Idle timeout, closing container stdin',
       );
@@ -208,7 +218,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, traceId, tracedLogger, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -217,7 +227,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           : JSON.stringify(result.result);
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
+      tracedLogger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
@@ -242,7 +252,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
-      logger.warn(
+      tracedLogger.warn(
         { group: group.name },
         'Agent error after output was sent, skipping cursor rollback to prevent duplicates',
       );
@@ -251,7 +261,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // Roll back cursor so retries can re-process these messages
     lastAgentTimestamp[chatJid] = previousCursor;
     saveState();
-    logger.warn(
+    tracedLogger.warn(
       { group: group.name },
       'Agent error, rolled back message cursor for retry',
     );
@@ -265,6 +275,8 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  traceId: string,
+  tracedLogger: pino.Logger,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
@@ -320,6 +332,8 @@ async function runAgent(
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
+      traceId,
+      tracedLogger,
     );
 
     if (output.newSessionId) {
@@ -328,7 +342,7 @@ async function runAgent(
     }
 
     if (output.status === 'error') {
-      logger.error(
+      tracedLogger.error(
         { group: group.name, error: output.error },
         'Container agent error',
       );
@@ -337,7 +351,7 @@ async function runAgent(
 
     return 'success';
   } catch (err) {
-    logger.error({ group: group.name, err }, 'Agent error');
+    tracedLogger.error({ group: group.name, err }, 'Agent error');
     return 'error';
   }
 }
@@ -483,6 +497,29 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
+  // Start metrics server if enabled (jail runtime only)
+  let metricsServer: ReturnType<typeof startMetricsServer> = null;
+  if (getRuntime() === 'jail') {
+    const jailRuntime = await import('./jail-runtime.js');
+    metricsServer = startMetricsServer(
+      { enabled: METRICS_ENABLED, port: METRICS_PORT },
+      jailRuntime.JAIL_CONFIG.templateDataset,
+      jailRuntime.JAIL_CONFIG.templateSnapshot,
+      jailRuntime.JAIL_CONFIG.jailsDataset.split('/')[0], // Extract pool name (e.g., zroot)
+    );
+
+    // Update metrics every 30 seconds
+    if (METRICS_ENABLED) {
+      setInterval(async () => {
+        await updateMetrics(
+          jailRuntime.getActiveJailCount,
+          jailRuntime.getEpairMetrics,
+          jailRuntime.JAIL_CONFIG.jailsDataset.split('/')[0],
+        );
+      }, 30000);
+    }
+  }
+
   // Graceful shutdown handlers
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
@@ -490,6 +527,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
+    if (metricsServer) metricsServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
 
@@ -501,6 +539,13 @@ async function main(): Promise<void> {
       } catch (err) {
         logger.warn({ err }, 'Failed to clean up jails during shutdown');
       }
+    }
+
+    // Close all rotating log streams
+    try {
+      await closeAllLogStreams();
+    } catch (err) {
+      logger.warn({ err }, 'Failed to close log streams during shutdown');
     }
 
     process.exit(0);
@@ -602,6 +647,26 @@ async function main(): Promise<void> {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
     process.exit(1);
   });
+
+  // Periodic log cleanup (runs daily)
+  const logCleanupInterval = setInterval(
+    () => {
+      cleanupAllGroupLogs(GROUPS_DIR).catch((err) => {
+        logger.warn({ err }, 'Periodic log cleanup failed');
+      });
+    },
+    24 * 60 * 60 * 1000,
+  ); // 24 hours
+  // Clean up on shutdown
+  const originalShutdown = shutdown;
+  const shutdownWithCleanup = async (signal: string) => {
+    clearInterval(logCleanupInterval);
+    await originalShutdown(signal);
+  };
+  process.removeListener('SIGTERM', shutdown);
+  process.removeListener('SIGINT', shutdown);
+  process.on('SIGTERM', () => shutdownWithCleanup('SIGTERM'));
+  process.on('SIGINT', () => shutdownWithCleanup('SIGINT'));
 }
 
 // Guard: only run when executed directly, not when imported by tests
