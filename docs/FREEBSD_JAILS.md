@@ -1070,10 +1070,51 @@ ext_if = "em0"  # Replace NANOCLAW_EXT_IF_PLACEHOLDER with your interface
 # Add allowed destinations (before block rule)
 table <my_api> persist { api.example.com }
 pass out quick on $ext_if proto tcp from $jail_net to <my_api> port 443 keep state
+```
 
-# Refresh Anthropic IPs if needed
+### Automated pf Table IP Refresh
+
+The `<anthropic_api>` pf table uses pinned IP ranges (not DNS resolution) to prevent DNS poisoning attacks. If Anthropic updates their infrastructure, these IPs need to be refreshed periodically.
+
+**Automated Refresh (Recommended)**
+
+Set up a weekly cron job to check and update the IPs from official Anthropic documentation:
+
+```sh
+# Create log directory
+sudo mkdir -p /var/log/nanoclaw
+
+# Add to root's crontab (sudo crontab -e):
+# Weekly refresh: Sundays at 2 AM
+0 2 * * 0 /home/jims/code/nanoclaw/src/scripts/refresh-pf-tables.sh >> /var/log/nanoclaw/pf-refresh.log 2>&1
+```
+
+The script (`scripts/refresh-pf-tables.sh`):
+- Queries official Anthropic API IP ranges (from documentation, not DNS)
+- Validates IP ranges before updating
+- Updates the pf table atomically
+- Logs all changes for audit trail
+- Verifies the update succeeded
+
+**Manual Refresh**
+
+To manually refresh the table:
+
+```sh
+# Run the refresh script
+sudo /home/jims/code/nanoclaw/src/scripts/refresh-pf-tables.sh
+
+# Verify the table contents
+sudo pfctl -t anthropic_api -T show
+```
+
+**IMPORTANT**: Do NOT use DNS-based refresh commands like:
+```sh
+# INSECURE - defeats DNS poisoning protection
 sudo pfctl -t anthropic_api -T replace api.anthropic.com
 ```
+
+Always use the automated script or update the static IP ranges in `etc/pf-nanoclaw.conf` directly from official Anthropic documentation.
 
 ### Sudoers File
 
