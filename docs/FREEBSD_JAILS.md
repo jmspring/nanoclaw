@@ -459,31 +459,11 @@ Each jail gets its own /30 subnet. Multiple jails can run simultaneously without
 
 #### pf Firewall Configuration
 
-NanoClaw provides two pf configuration files for different scenarios. Choose the appropriate one based on whether you already have pf configured on your system.
+NanoClaw provides a comprehensive pf configuration file (`etc/pf-nanoclaw.conf`) for network isolation in restricted mode.
 
-##### Choosing the Right Configuration File
+##### New pf Installation
 
-**Option A: Standalone Configuration (`etc/pf-nanoclaw.conf`)**
-
-Use this file when:
-- pf is **NOT** already configured on your system
-- You want a complete, self-contained pf ruleset
-- You don't have an existing `/etc/pf.conf` file
-
-This provides a complete firewall configuration that handles all rules for both NanoClaw jails and the host system.
-
-**Option B: Anchor Configuration (`etc/pf-nanoclaw-anchor.conf`)**
-
-Use this file when:
-- You **ALREADY HAVE** `/etc/pf.conf` configured
-- You want to integrate NanoClaw rules into your existing pf setup
-- You need to preserve other existing firewall rules
-
-This adds NanoClaw-specific rules via an anchor without disrupting your existing configuration.
-
-##### Setup: Standalone Configuration
-
-If pf is not yet configured on your system:
+If pf is not yet configured on your system, use the standalone configuration:
 
 ```sh
 # Enable IP forwarding (required for NAT)
@@ -506,42 +486,54 @@ sudo pfctl -f /usr/local/etc/pf-nanoclaw.conf
 sudo pfctl -e
 ```
 
-##### Setup: Anchor Configuration
+##### Existing pf Installation
 
-If you already have `/etc/pf.conf` configured:
+If you already have `/etc/pf.conf` configured, integrate the NanoClaw rules manually by extracting the relevant sections from `etc/pf-nanoclaw.conf`:
 
-```sh
-# Enable IP forwarding (required for NAT)
-sudo sysctl net.inet.ip.forwarding=1
-echo 'net.inet.ip.forwarding=1' | sudo tee -a /etc/sysctl.conf
+1. **Add macros** (near the top with other definitions):
+   ```
+   jail_net = "10.99.0.0/24"
+   table <anthropic_api> persist { 160.79.104.0/21, 2607:6bc0::/48 }
+   trusted_dns = "{ 8.8.8.8, 1.1.1.1 }"
+   ```
 
-# Edit your existing /etc/pf.conf and add these lines:
-#
-# Near the top with other macros:
-#   nanoclaw_net = "10.99.0.0/24"
-#   nanoclaw_gw = "10.99.0.1"
-#   nanoclaw_if = "lo1"
-#
-# In the NAT section, before filter rules:
-#   nat-anchor "nanoclaw"
-#   nat on egress from $nanoclaw_net to any -> (egress:0)
-#
-# In the filter rules section:
-#   anchor "nanoclaw"
-#   load anchor "nanoclaw" from "/usr/local/etc/pf-nanoclaw-anchor.conf"
+2. **Add NAT rule** (in your NAT section):
+   ```
+   nat on $ext_if from $jail_net to any -> ($ext_if)
+   ```
 
-# Copy the anchor file to a system location
-sudo cp /home/youruser/code/nanoclaw/src/etc/pf-nanoclaw-anchor.conf /usr/local/etc/
+3. **Add filter rules** (in your filter section, before blocking rules):
+   ```
+   # Jail -> credential proxy on host gateway (port 3001)
+   pass quick proto tcp from $jail_net to $jail_net port 3001 keep state
 
-# Reload your pf configuration
-sudo pfctl -f /etc/pf.conf
-```
+   # Block inter-jail traffic
+   block drop quick from $jail_net to $jail_net
+
+   # Jail -> DNS (trusted servers only)
+   pass out quick on $ext_if proto udp from $jail_net to $trusted_dns port 53 keep state
+   pass out quick on $ext_if proto tcp from $jail_net to $trusted_dns port 53 keep state
+
+   # Jail -> Claude API
+   pass out quick on $ext_if proto tcp from $jail_net to <anthropic_api> port 443 keep state
+
+   # Block all other jail traffic
+   block return log quick on $ext_if from $jail_net to any
+
+   # Pass traffic on epair interfaces
+   pass on epair
+   ```
+
+4. **Reload configuration**:
+   ```sh
+   sudo pfctl -f /etc/pf.conf
+   ```
 
 **Important Notes:**
-- Both configurations provide the same network isolation for jails
-- The standalone version is simpler for new pf setups
-- The anchor version preserves your existing firewall rules
-- Adjust the path to `pf-nanoclaw-anchor.conf` to match your NanoClaw installation location
+- Replace `$ext_if` with your actual external interface name (e.g., `re0`, `em0`)
+- The Anthropic API IP ranges are pinned for security (prevents DNS poisoning)
+- See `etc/pf-nanoclaw.conf` for detailed comments and additional configuration options
+- Adjust rule placement based on your existing ruleset structure
 
 #### pf Rules Explained
 

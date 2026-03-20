@@ -24,7 +24,7 @@ This document outlines the cleanup tasks for the FreeBSD jail support implementa
 | File | Status | Action |
 |------|--------|--------|
 | `etc/pf-nanoclaw.conf` | Complete | Keep - primary firewall rules |
-| `etc/pf-nanoclaw-anchor.conf` | Complete | Review - consolidate with primary |
+| `etc/pf-nanoclaw-anchor.conf` | Removed | Consolidated - see ticket src-jc04 |
 
 ### Setup Scripts
 | File | Status | Action |
@@ -71,9 +71,10 @@ This document outlines the cleanup tasks for the FreeBSD jail support implementa
 
 ### Medium Priority
 
-4. **JAIL-CLEANUP-004**: Consolidate pf configuration documentation
-   - Document when to use `pf-nanoclaw.conf` vs `pf-nanoclaw-anchor.conf`
-   - Or remove one if redundant
+4. **JAIL-CLEANUP-004**: Consolidate pf configuration documentation ✅ **COMPLETED** (ticket src-jc04)
+   - Removed redundant `pf-nanoclaw-anchor.conf` (outdated, used lo1 instead of epair, insecure DNS resolution)
+   - Updated FREEBSD_JAILS.md with manual integration instructions for existing pf setups
+   - Kept standalone `pf-nanoclaw.conf` as primary configuration (more complete, secure, well-documented)
 
 5. **JAIL-CLEANUP-005**: Clean up Git branches ✅ **COMPLETED** (ticket src-jc05)
    - Deleted local and remote branches (all work integrated via PRs/tickets):
