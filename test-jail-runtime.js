@@ -12,7 +12,7 @@ import {
   getJailName,
   sanitizeJailName,
   JAIL_CONFIG,
-} from './jail-runtime.js';
+} from './dist/jail-runtime.js';
 import { execFileSync, execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -147,7 +147,7 @@ test('exec() — command runs inside jail, stdout captured correctly', async () 
     await createJail(groupId, mounts);
 
     // Run a simple command that outputs known text (use absolute path)
-    const result = await execInJail(groupId, ['/bin/sh', '-c', '/bin/echo "Hello from jail"']);
+    const result = await execInJail(groupId, ['/bin/echo', 'Hello from jail']);
 
     assertEqual(result.code, 0, 'Exit code should be 0');
     assert(
@@ -155,8 +155,8 @@ test('exec() — command runs inside jail, stdout captured correctly', async () 
       `stdout should be 'Hello from jail', got: '${result.stdout.trim()}'`
     );
 
-    // Run a command that outputs multiple lines
-    const multiResult = await execInJail(groupId, ['/bin/sh', '-c', '/bin/echo line1; /bin/echo line2; /bin/echo line3']);
+    // Run a command that outputs multiple lines (using sh -c since we need semicolons)
+    const multiResult = await execInJail(groupId, ['sh', '-c', '/bin/echo line1; /bin/echo line2; /bin/echo line3']);
     const lines = multiResult.stdout.trim().split('\n');
     assertEqual(lines.length, 3, 'Should have 3 lines of output');
     assertEqual(lines[0], 'line1', 'First line should be line1');
@@ -571,7 +571,7 @@ test('Concurrent jail creation with epair locking', async () => {
 
   const concurrentCount = 10;
   const groupIds = [];
-  const mounts = [];
+  const jailMounts = new Map(); // Map of groupId -> mounts array
 
   try {
     // Create IPC directories for all jails
@@ -581,18 +581,25 @@ test('Concurrent jail creation with epair locking', async () => {
 
       const ipcDir = path.join(JAIL_CONFIG.ipcPath, groupId);
       fs.mkdirSync(ipcDir, { recursive: true });
-      mounts.push({
-        source: ipcDir,
-        target: '/ipc',
-        readOnly: false,
-      });
+      // Set permissions for jail node user to write (group wheel with setgid)
+      fs.chmodSync(ipcDir, 0o2775);
+      fs.chownSync(ipcDir, process.getuid(), 0); // group wheel (gid 0)
+
+      // Each jail gets its own mount array
+      jailMounts.set(groupId, [
+        {
+          hostPath: ipcDir,
+          jailPath: 'ipc',
+          readonly: false,
+        },
+      ]);
     }
 
     // Create all jails concurrently
     console.log(`  Creating ${concurrentCount} jails concurrently...`);
     const createPromises = groupIds.map(async (groupId, index) => {
       try {
-        await createJail(groupId, mounts);
+        await createJail(groupId, jailMounts.get(groupId));
         console.log(`  Jail ${index + 1}/${concurrentCount} created successfully: ${groupId}`);
         return { groupId, success: true };
       } catch (error) {
@@ -611,8 +618,9 @@ test('Concurrent jail creation with epair locking', async () => {
 
     // Verify all jails are running
     for (const groupId of groupIds) {
-      const running = await isJailRunning(groupId);
-      assert(running, `Jail ${groupId} should be running after concurrent creation`);
+      const jailName = getJailName(groupId);
+      const running = isJailRunning(jailName);
+      assert(running, `Jail ${groupId} (${jailName}) should be running after concurrent creation`);
     }
 
     // If in restricted network mode, verify epair uniqueness
@@ -647,7 +655,7 @@ test('Concurrent jail creation with epair locking', async () => {
     console.log('  Cleaning up concurrent test jails...');
     const cleanupPromises = groupIds.map(async (groupId, index) => {
       try {
-        await destroyJail(groupId, mounts);
+        await destroyJail(groupId, jailMounts.get(groupId) || []);
         const ipcDir = path.join(JAIL_CONFIG.ipcPath, groupId);
         fs.rmSync(ipcDir, { recursive: true, force: true });
       } catch (error) {
