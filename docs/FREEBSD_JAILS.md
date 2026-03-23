@@ -792,29 +792,21 @@ This isolates NanoClaw's privileges from your personal account.
 
 ## 7. Template Management
 
-### Initial Template Creation
+For the complete template build/update guide including sudo requirements, blue/green updates, and package management, see **[Template Setup](TEMPLATE_SETUP.md)**.
 
-The template setup script (`scripts/setup-jail-template.sh`) handles:
-
-1. Booting template as temporary jail
-2. Installing global npm packages
-3. Copying agent-runner source
-4. Installing dependencies
-5. Creating workspace structure
-6. Snapshotting the result
-
-### Updating the Template
-
-After modifying agent-runner or dependencies:
+### Quick Reference
 
 ```sh
-# First, destroy all active jail clones
+# Build or rebuild the template
+./scripts/setup-jail-template.sh
+
+# Destroy active clones first (required before rebuilding)
 sudo zfs list -H -o name -t filesystem | grep 'zroot/nanoclaw/jails/nanoclaw_' | while read ds; do
   sudo zfs destroy -r "$ds"
 done
 
-# Re-run template setup
-./scripts/setup-jail-template.sh
+# Verify template snapshot
+zfs list -t snapshot zroot/nanoclaw/jails/template@base
 ```
 
 ### Template Contents
@@ -846,24 +838,7 @@ done
     └── lib/node_modules/      # Global packages
 ```
 
-### Dependent Clones Error
-
-If you see:
-
-```
-Cannot update template: snapshot has dependent clones:
-zroot/nanoclaw/jails/nanoclaw_mygroup
-```
-
-You must destroy all jail datasets first:
-
-```sh
-# List clones
-sudo zfs list -H -o name -t filesystem | grep nanoclaw_
-
-# Destroy them
-sudo zfs destroy -r zroot/nanoclaw/jails/nanoclaw_mygroup
-```
+See also: [Jail Package Updates](JAIL_PACKAGE_UPDATES.md) for supply chain security and package update procedures.
 
 ## 8. Troubleshooting
 
@@ -954,6 +929,132 @@ sudo pfctl -s rules | grep "port 53"
 
 # Or manually check
 sudo jexec nanoclaw_template npm list -g
+```
+
+### Recovery Procedures
+
+#### Orphaned Jails
+
+Jails can be left running if NanoClaw crashes or is killed with `kill -9`. On next startup, `cleanupOrphans` attempts automatic recovery, but manual cleanup may be needed.
+
+```sh
+# List orphaned jails
+sudo jls -N | grep nanoclaw_
+
+# Stop all orphaned jails
+sudo jls -N | grep nanoclaw_ | while read name; do
+  echo "Stopping $name"
+  sudo jail -r "$name" 2>/dev/null
+done
+```
+
+#### Stale Mounts
+
+If a jail was not cleanly stopped, nullfs and devfs mounts may remain.
+
+```sh
+# List stale nanoclaw mounts
+mount | grep nanoclaw_
+
+# Unmount all mounts for a specific jail (order matters: devfs last)
+JAIL_PATH="/path/to/jail/clone"
+sudo umount -f "$JAIL_PATH/workspace/project" 2>/dev/null
+sudo umount -f "$JAIL_PATH/workspace/group" 2>/dev/null
+sudo umount -f "$JAIL_PATH/workspace/ipc" 2>/dev/null
+sudo umount -f "$JAIL_PATH/home/node/.claude" 2>/dev/null
+sudo umount -f "$JAIL_PATH/app/src" 2>/dev/null
+sudo umount -f "$JAIL_PATH/dev" 2>/dev/null
+```
+
+#### Leaked Epair Interfaces
+
+In restricted networking mode, each jail gets an epair interface pair. If cleanup fails, these persist.
+
+```sh
+# List all epair interfaces
+ifconfig -l | tr ' ' '\n' | grep epair
+
+# Destroy a leaked epair (destroying the 'a' side removes both)
+sudo ifconfig epair0a destroy
+```
+
+#### Full ZFS Pool
+
+When the ZFS pool fills up, jail creation fails and existing jails may behave unpredictably.
+
+```sh
+# Check what is using space
+zfs list -r -o name,used,refer zroot/nanoclaw/jails | sort -k2 -h
+
+# Stop orphaned jails that may be holding clones
+sudo jls -N | grep nanoclaw_ | while read name; do
+  echo "Stopping $name"
+  sudo jail -r "$name" 2>/dev/null
+done
+
+# List orphaned datasets (not template, not active)
+zfs list -r zroot/nanoclaw/jails | grep -v template | grep -v NAME
+
+# Destroy orphaned datasets (CAREFUL -- verify these are not active first)
+# Dry run (shows what would be destroyed):
+zfs list -r zroot/nanoclaw/jails | grep -v template | grep -v NAME | awk '{print $1}' | while read ds; do
+  echo "Would destroy: $ds"
+done
+# To actually destroy, uncomment:
+#   sudo zfs destroy -r "$ds"
+
+# Check if old log files are consuming space
+du -sh groups/*/logs/
+```
+
+#### Template Corruption
+
+If the template snapshot is missing or corrupted, all new jail creation fails.
+
+```sh
+# Check if template snapshot exists
+zfs list -t snapshot zroot/nanoclaw/jails/template@base
+
+# If missing, rebuild from scratch:
+# 1. Stop NanoClaw
+pkill -f 'dist/index.js'
+
+# 2. Verify no dependent clones exist
+zfs list -r zroot/nanoclaw/jails | grep -v template
+
+# 3. If clones exist, destroy them first (see "Full ZFS Pool" above)
+
+# 4. Rebuild template
+./scripts/setup-jail-template.sh
+
+# 5. Restart NanoClaw
+npm run dev
+```
+
+#### Nuclear Option: Full Reset
+
+Destroys all jail datasets and starts fresh. **Warning: this destroys all in-jail session data.**
+
+```sh
+# 1. Stop NanoClaw
+pkill -f 'dist/index.js'
+
+# 2. Stop all jails
+sudo jls -N | grep nanoclaw_ | while read name; do sudo jail -r "$name" 2>/dev/null; done
+
+# 3. Unmount any stale mounts
+mount | grep nanoclaw_ | awk '{print $3}' | while read mp; do sudo umount -f "$mp" 2>/dev/null; done
+
+# 4. Destroy all non-template datasets
+zfs list -r zroot/nanoclaw/jails | grep -v template | grep -v NAME | awk '{print $1}' | tac | while read ds; do
+  sudo zfs destroy -r "$ds"
+done
+
+# 5. Destroy leaked epairs
+ifconfig -l | tr ' ' '\n' | grep 'epair.*a$' | while read iface; do sudo ifconfig "$iface" destroy; done
+
+# 6. Restart NanoClaw
+npm run dev
 ```
 
 ## 9. Security Comparison
