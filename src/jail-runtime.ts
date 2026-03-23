@@ -871,6 +871,36 @@ export async function isJailRunningAsync(jailName: string): Promise<boolean> {
   }
 }
 
+/** Get ZFS pool available space in bytes, or -1 on error */
+function getZfsPoolAvailable(poolName: string): number {
+  try {
+    const output = execFileSync(
+      'zfs',
+      ['get', '-Hp', '-o', 'value', 'available', poolName],
+      { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
+    );
+    const bytes = parseInt(output.trim(), 10);
+    return isNaN(bytes) ? -1 : bytes;
+  } catch {
+    return -1;
+  }
+}
+
+/** Get ZFS pool used space in bytes, or -1 on error */
+function getZfsPoolUsed(poolName: string): number {
+  try {
+    const output = execFileSync(
+      'zfs',
+      ['get', '-Hp', '-o', 'value', 'used', poolName],
+      { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
+    );
+    const bytes = parseInt(output.trim(), 10);
+    return isNaN(bytes) ? -1 : bytes;
+  } catch {
+    return -1;
+  }
+}
+
 /** Check if a ZFS dataset exists */
 function datasetExists(dataset: string): boolean {
   try {
@@ -1251,6 +1281,22 @@ export async function createJail(
       `Cannot create jail: maximum concurrent jail limit reached (${MAX_CONCURRENT_JAILS}). ` +
         `Currently active: ${activeJails.size}. Configure NANOCLAW_MAX_JAILS to adjust limit.`,
     );
+  }
+
+  // ZFS space pre-check: refuse to create if pool is critically low
+  const poolName = JAIL_CONFIG.jailsDataset.split('/')[0];
+  const availBytes = getZfsPoolAvailable(poolName);
+  const usedBytes = getZfsPoolUsed(poolName);
+  if (availBytes > 0 && usedBytes > 0) {
+    const totalBytes = availBytes + usedBytes;
+    const pctAvail = (availBytes / totalBytes) * 100;
+    if (pctAvail < 5) {
+      throw new Error(
+        `Cannot create jail: ZFS pool "${poolName}" has only ${pctAvail.toFixed(1)}% free space ` +
+          `(${Math.round(availBytes / 1024 / 1024)}MB available of ${Math.round(totalBytes / 1024 / 1024)}MB total). ` +
+          `Free up space before creating new jails.`,
+      );
+    }
   }
 
   log.info({ jailName, groupId }, 'Creating jail');
