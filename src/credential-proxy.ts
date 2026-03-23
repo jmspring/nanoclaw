@@ -57,6 +57,24 @@ export function revokeJailToken(token: string): void {
   validTokens.delete(token);
 }
 
+const RATE_LIMIT_MAX = 60;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const rateLimitMap = new Map<string, { count: number; windowStart: number }>();
+
+/** Check and update rate limit for an IP. Returns true if the request is allowed. */
+export function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+
+  if (!entry || now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
+    rateLimitMap.set(ip, { count: 1, windowStart: now });
+    return true;
+  }
+
+  entry.count++;
+  return entry.count <= RATE_LIMIT_MAX;
+}
+
 export function startCredentialProxy(
   port: number,
   host = '127.0.0.1',
@@ -97,6 +115,15 @@ export function startCredentialProxy(
           res.end('Forbidden');
           return;
         }
+      }
+
+      // Per-IP rate limiting
+      const normalizedAddr = normalizeIP(remoteAddr);
+      if (!checkRateLimit(normalizedAddr)) {
+        logger.warn({ remoteAddr, url: req.url }, 'Credential proxy: rate limit exceeded');
+        res.writeHead(429);
+        res.end('Too Many Requests');
+        return;
       }
 
       const chunks: Buffer[] = [];

@@ -11,7 +11,7 @@ vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 
-import { startCredentialProxy, isAllowedSource, registerJailToken, revokeJailToken } from './credential-proxy.js';
+import { startCredentialProxy, isAllowedSource, registerJailToken, revokeJailToken, checkRateLimit } from './credential-proxy.js';
 
 function makeRequest(
   port: number,
@@ -90,6 +90,33 @@ describe('isAllowedSource', () => {
     delete process.env.NANOCLAW_JAIL_NETWORK_MODE;
     expect(isAllowedSource('127.0.0.1')).toBe(false);
     expect(isAllowedSource('10.99.0.2')).toBe(true);
+  });
+});
+
+describe('checkRateLimit', () => {
+  it('allows requests within the limit', () => {
+    const ip = 'rate-test-1';
+    for (let i = 0; i < 60; i++) {
+      expect(checkRateLimit(ip)).toBe(true);
+    }
+  });
+
+  it('rejects requests exceeding the limit', () => {
+    const ip = 'rate-test-2';
+    for (let i = 0; i < 60; i++) {
+      checkRateLimit(ip);
+    }
+    expect(checkRateLimit(ip)).toBe(false);
+  });
+
+  it('tracks different IPs independently', () => {
+    const ip1 = 'rate-test-3a';
+    const ip2 = 'rate-test-3b';
+    for (let i = 0; i < 60; i++) {
+      checkRateLimit(ip1);
+    }
+    expect(checkRateLimit(ip1)).toBe(false);
+    expect(checkRateLimit(ip2)).toBe(true);
   });
 });
 
