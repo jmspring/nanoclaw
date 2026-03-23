@@ -12,7 +12,7 @@ import {
   getJailName,
   sanitizeJailName,
   JAIL_CONFIG,
-} from './jail-runtime.js';
+} from './jail/index.js';
 import { execFileSync, execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';

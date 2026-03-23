@@ -50,7 +50,6 @@ export { buildJailMounts, ensureHostDirectories } from './mounts.js';
 // Lifecycle
 export {
   sanitizeJailName,
-  detectNameCollision,
   getJailName,
   getJailPath,
   isJailRunning,

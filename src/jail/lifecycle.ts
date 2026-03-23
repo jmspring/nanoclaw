@@ -72,30 +72,6 @@ export function sanitizeJailName(groupId: string): string {
   return `${sanitized}_${hash}`;
 }
 
-/** Detect potential collision between group names. */
-export function detectNameCollision(
-  groupId1: string,
-  groupId2: string,
-): boolean {
-  if (groupId1 === groupId2) return false;
-  const sanitized1 = groupId1.replace(/[^a-zA-Z0-9_]/g, '_');
-  const sanitized2 = groupId2.replace(/[^a-zA-Z0-9_]/g, '_');
-  const wouldCollide = sanitized1 === sanitized2;
-  if (wouldCollide) {
-    logger.warn(
-      {
-        group1: groupId1,
-        group2: groupId2,
-        sanitizedBase: sanitized1,
-        jail1: getJailName(groupId1),
-        jail2: getJailName(groupId2),
-      },
-      'Potential group name collision detected (prevented by hash suffix)',
-    );
-  }
-  return wouldCollide;
-}
-
 /** Generate jail name from groupId */
 export function getJailName(groupId: string): string {
   return `nanoclaw_${sanitizeJailName(groupId)}`;
