@@ -1322,7 +1322,7 @@ export async function createJail(
 
     // Jail security settings
     jailParams.push(
-      'enforce_statfs=1',
+      'enforce_statfs=2',
       'mount.devfs',
       'devfs_ruleset=10', // Apply restrictive devfs ruleset (see etc/devfs.rules)
       'securelevel=3',
