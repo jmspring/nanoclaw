@@ -23,6 +23,58 @@ export interface ProxyConfig {
   authMode: AuthMode;
 }
 
+/** Normalize IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1 -> 127.0.0.1) */
+function normalizeIP(addr: string | undefined): string {
+  if (!addr) return '';
+  return addr.replace(/^::ffff:/, '');
+}
+
+/** Check whether a remote address is allowed to use the proxy. */
+export function isAllowedSource(remoteAddr: string | undefined): boolean {
+  const addr = normalizeIP(remoteAddr);
+  if (!addr) return false;
+
+  const mode =
+    (process.env.NANOCLAW_JAIL_NETWORK_MODE as 'inherit' | 'restricted') ||
+    'restricted';
+
+  if (mode === 'restricted') {
+    // Jails use 10.99.0.0/24 via vnet epair
+    return addr.startsWith('10.99.0.');
+  }
+  // Inherit mode: only localhost
+  return addr === '127.0.0.1' || addr === '::1';
+}
+
+/** Set of valid per-jail tokens. Tokens are added on jail creation and removed on destruction. */
+const validTokens = new Set<string>();
+
+export function registerJailToken(token: string): void {
+  validTokens.add(token);
+}
+
+export function revokeJailToken(token: string): void {
+  validTokens.delete(token);
+}
+
+const RATE_LIMIT_MAX = 60;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const rateLimitMap = new Map<string, { count: number; windowStart: number }>();
+
+/** Check and update rate limit for an IP. Returns true if the request is allowed. */
+export function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+
+  if (!entry || now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
+    rateLimitMap.set(ip, { count: 1, windowStart: now });
+    return true;
+  }
+
+  entry.count++;
+  return entry.count <= RATE_LIMIT_MAX;
+}
+
 export function startCredentialProxy(
   port: number,
   host = '127.0.0.1',
@@ -46,6 +98,43 @@ export function startCredentialProxy(
 
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
+      const remoteAddr = req.socket.remoteAddress;
+      if (!isAllowedSource(remoteAddr)) {
+        logger.warn({ remoteAddr, url: req.url }, 'Credential proxy: rejected unauthorized source');
+        res.writeHead(403);
+        res.end('Forbidden');
+        return;
+      }
+
+      // Per-jail token authentication (skip if no tokens registered, e.g. Docker mode)
+      if (validTokens.size > 0) {
+        const token = req.headers['x-jail-token'] as string | undefined;
+        if (!token || !validTokens.has(token)) {
+          logger.warn({ remoteAddr, url: req.url }, 'Credential proxy: invalid or missing jail token');
+          res.writeHead(403);
+          res.end('Forbidden');
+          return;
+        }
+      }
+
+      // Request path validation — only proxy known API paths
+      const reqPath = req.url || '';
+      if (!reqPath.startsWith('/v1/') && !reqPath.startsWith('/api/oauth/')) {
+        logger.warn({ remoteAddr, url: req.url }, 'Credential proxy: rejected invalid path');
+        res.writeHead(404);
+        res.end('Not Found');
+        return;
+      }
+
+      // Per-IP rate limiting
+      const normalizedAddr = normalizeIP(remoteAddr);
+      if (!checkRateLimit(normalizedAddr)) {
+        logger.warn({ remoteAddr, url: req.url }, 'Credential proxy: rate limit exceeded');
+        res.writeHead(429);
+        res.end('Too Many Requests');
+        return;
+      }
+
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
@@ -57,10 +146,11 @@ export function startCredentialProxy(
             'content-length': body.length,
           };
 
-        // Strip hop-by-hop headers that must not be forwarded by proxies
+        // Strip hop-by-hop and internal headers that must not be forwarded
         delete headers['connection'];
         delete headers['keep-alive'];
         delete headers['transfer-encoding'];
+        delete headers['x-jail-token'];
 
         if (authMode === 'api-key') {
           // API key mode: inject x-api-key on every request

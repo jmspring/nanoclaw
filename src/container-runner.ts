@@ -440,6 +440,12 @@ async function runJailAgent(
     // Track temp files that will be created during compilation/execution
     jailRuntime.trackJailTempFile(group.folder, '/tmp/dist');
     jailRuntime.trackJailTempFile(group.folder, '/tmp/input.json');
+
+    // Pass per-jail credential proxy token
+    const jailToken = jailRuntime.getJailToken(group.folder);
+    if (jailToken) {
+      env.CREDENTIAL_PROXY_TOKEN = jailToken;
+    }
   } catch (err) {
     log.error({ group: group.name, err }, 'Failed to create jail');
     return {
