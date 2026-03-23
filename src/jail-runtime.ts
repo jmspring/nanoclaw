@@ -126,14 +126,17 @@ export type SudoExecutorSync = (
   options?: SudoExecOptions,
 ) => string;
 
-/** Jail configuration - adjust paths for your environment */
+/** Root path for NanoClaw data — override via NANOCLAW_ROOT env var */
+const NANOCLAW_ROOT = process.env.NANOCLAW_ROOT || '/home/jims/code/nanoclaw';
+
+/** Jail configuration — paths derived from NANOCLAW_ROOT with per-path overrides */
 export const JAIL_CONFIG: JailConfig = {
-  templateDataset: 'zroot/nanoclaw/jails/template',
-  templateSnapshot: 'base',
-  jailsDataset: 'zroot/nanoclaw/jails',
-  jailsPath: '/home/jims/code/nanoclaw/jails',
-  workspacesPath: '/home/jims/code/nanoclaw/workspaces',
-  ipcPath: '/home/jims/code/nanoclaw/ipc',
+  templateDataset: process.env.NANOCLAW_TEMPLATE_DATASET || 'zroot/nanoclaw/jails/template',
+  templateSnapshot: process.env.NANOCLAW_TEMPLATE_SNAPSHOT || 'base',
+  jailsDataset: process.env.NANOCLAW_JAILS_DATASET || 'zroot/nanoclaw/jails',
+  jailsPath: process.env.NANOCLAW_JAILS_PATH || path.join(NANOCLAW_ROOT, 'jails'),
+  workspacesPath: process.env.NANOCLAW_WORKSPACES_PATH || path.join(NANOCLAW_ROOT, 'workspaces'),
+  ipcPath: process.env.NANOCLAW_IPC_PATH || path.join(NANOCLAW_ROOT, 'ipc'),
   // Network mode: "inherit" (ip4=inherit) or "restricted" (vnet with epair and pf)
   // IMPORTANT: Changing network mode requires updating pf configuration.
   // See docs/network-mode-migration.md or run scripts/switch-network-mode.sh

@@ -19,11 +19,12 @@
 
 set -eu
 
-# Configuration
-TEMPLATE_PATH="/home/jims/code/nanoclaw/jails/template"
-TEMPLATE_DATASET="zroot/nanoclaw/jails/template"
+# Configuration — override via environment variables or NANOCLAW_ROOT
+NANOCLAW_ROOT="${NANOCLAW_ROOT:-/home/jims/code/nanoclaw}"
+TEMPLATE_PATH="${NANOCLAW_JAILS_PATH:-${NANOCLAW_ROOT}/jails}/template"
+TEMPLATE_DATASET="${NANOCLAW_TEMPLATE_DATASET:-zroot/nanoclaw/jails/template}"
 SNAPSHOT_NAME="base"
-AGENT_RUNNER_SRC="/home/jims/code/nanoclaw/src/container/agent-runner"
+AGENT_RUNNER_SRC="${NANOCLAW_ROOT}/src/container/agent-runner"
 TEMP_JAIL_NAME="nanoclaw_template_setup"
 
 # Colors for output
