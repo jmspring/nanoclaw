@@ -24,6 +24,8 @@ export interface IpcDeps {
   ) => void;
 }
 
+export const IPC_MAX_FILE_SIZE = 1_048_576; // 1MB
+
 let ipcWatcherRunning = false;
 
 export function startIpcWatcher(deps: IpcDeps): void {
@@ -72,6 +74,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
           for (const file of messageFiles) {
             const filePath = path.join(messagesDir, file);
             try {
+              const stat = fs.statSync(filePath);
+              if (stat.size > IPC_MAX_FILE_SIZE) {
+                logger.warn({ file: filePath, size: stat.size }, 'IPC file too large, skipping');
+                fs.unlinkSync(filePath);
+                continue;
+              }
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               if (data.type === 'message' && data.chatJid && data.text) {
                 // Authorization: verify this group can send to this chatJid
@@ -123,6 +131,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
           for (const file of taskFiles) {
             const filePath = path.join(tasksDir, file);
             try {
+              const stat = fs.statSync(filePath);
+              if (stat.size > IPC_MAX_FILE_SIZE) {
+                logger.warn({ file: filePath, size: stat.size }, 'IPC file too large, skipping');
+                fs.unlinkSync(filePath);
+                continue;
+              }
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               // Pass source group identity to processTaskIpc for authorization
               await processTaskIpc(data, sourceGroup, isMain, deps);

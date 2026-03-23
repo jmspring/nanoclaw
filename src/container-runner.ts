@@ -3,6 +3,7 @@
  * Spawns agent execution in containers and handles IPC
  */
 import { ChildProcess, execFile, spawn } from 'child_process';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -305,7 +306,7 @@ function buildVolumeMounts(
   mounts.push({
     hostPath: groupAgentRunnerDir,
     containerPath: '/app/src',
-    readonly: false,
+    readonly: true,
   });
 
   // Additional mounts validated against external allowlist (tamper-proof from containers)
@@ -321,9 +322,31 @@ function buildVolumeMounts(
   return mounts;
 }
 
+/** Default allowed tools for all groups. */
+const ALL_TOOLS = [
+  'Bash',
+  'Read', 'Write', 'Edit', 'Glob', 'Grep',
+  'WebSearch', 'WebFetch',
+  'Task', 'TaskOutput', 'TaskStop',
+  'TeamCreate', 'TeamDelete', 'SendMessage',
+  'TodoWrite', 'ToolSearch', 'Skill',
+  'NotebookEdit',
+  'mcp__nanoclaw__*',
+];
+
+/** Restricted tools for non-main groups (no shell, no team management). */
+const RESTRICTED_TOOLS = ALL_TOOLS.filter(
+  (t) => !['Bash', 'TeamCreate', 'TeamDelete'].includes(t),
+);
+
+export function getAllowedTools(isMain: boolean): string[] {
+  return isMain ? ALL_TOOLS : RESTRICTED_TOOLS;
+}
+
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  isMain: boolean,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -346,6 +369,9 @@ function buildContainerArgs(
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
+
+  // Per-group tool restrictions
+  args.push('-e', `ALLOWED_TOOLS=${getAllowedTools(isMain).join(',')}`);
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
@@ -403,6 +429,9 @@ async function runJailAgent(
     PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
     ANTHROPIC_BASE_URL: `http://${jailRuntime.JAIL_CONFIG.jailHostIP}:${CREDENTIAL_PROXY_PORT}`,
   };
+
+  // Per-group tool restrictions
+  env.ALLOWED_TOOLS = getAllowedTools(input.isMain).join(',');
 
   // Mirror the host's auth method with a placeholder value.
   // API key mode: SDK sends x-api-key, proxy replaces with real key.
@@ -802,6 +831,16 @@ async function runJailAgent(
   });
 }
 
+/** Compute SHA-256 hash of a file, or null if the file doesn't exist. */
+export function hashFile(filePath: string): string | null {
+  try {
+    const content = fs.readFileSync(filePath);
+    return createHash('sha256').update(content).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -817,13 +856,18 @@ export async function runContainerAgent(
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
+  // Integrity check: snapshot CLAUDE.md hash before agent run
+  const claudeMdPath = path.join(groupDir, 'CLAUDE.md');
+  const preHash = hashFile(claudeMdPath);
+
   // CRITICAL: Check runtime FIRST before any Docker-specific setup.
   // Jail path must be completely independent from Docker.
   const runtime = getRuntime();
+  let result: ContainerOutput;
   if (runtime === 'jail') {
     // Jail path uses semantic mount paths, not Docker VolumeMount[]
     // Does NOT call buildVolumeMounts, buildContainerArgs, or any Docker code
-    return runJailAgent(
+    result = await runJailAgent(
       group,
       input,
       logsDir,
@@ -832,7 +876,7 @@ export async function runContainerAgent(
       traceId,
       tracedLogger,
     );
-  }
+  } else {
 
   // Docker path only below this point
   const startTime = Date.now();
@@ -840,7 +884,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(mounts, containerName, input.isMain);
 
   log.debug(
     {
@@ -865,7 +909,7 @@ export async function runContainerAgent(
     'Spawning container agent',
   );
 
-  return new Promise((resolve) => {
+  result = await new Promise((resolve) => {
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -1197,6 +1241,18 @@ export async function runContainerAgent(
       });
     });
   });
+  }
+
+  // Integrity check: compare CLAUDE.md hash after agent run
+  const postHash = hashFile(claudeMdPath);
+  if (preHash !== null && postHash !== null && preHash !== postHash) {
+    log.warn(
+      { group: group.name, folder: group.folder, preHash, postHash },
+      'CLAUDE.md was modified during agent run',
+    );
+  }
+
+  return result;
 }
 
 export function writeTasksSnapshot(
