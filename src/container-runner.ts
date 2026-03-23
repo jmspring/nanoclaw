@@ -3,6 +3,7 @@
  * Spawns agent execution in containers and handles IPC
  */
 import { ChildProcess, execFile, spawn } from 'child_process';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -802,6 +803,16 @@ async function runJailAgent(
   });
 }
 
+/** Compute SHA-256 hash of a file, or null if the file doesn't exist. */
+export function hashFile(filePath: string): string | null {
+  try {
+    const content = fs.readFileSync(filePath);
+    return createHash('sha256').update(content).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -817,13 +828,18 @@ export async function runContainerAgent(
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
+  // Integrity check: snapshot CLAUDE.md hash before agent run
+  const claudeMdPath = path.join(groupDir, 'CLAUDE.md');
+  const preHash = hashFile(claudeMdPath);
+
   // CRITICAL: Check runtime FIRST before any Docker-specific setup.
   // Jail path must be completely independent from Docker.
   const runtime = getRuntime();
+  let result: ContainerOutput;
   if (runtime === 'jail') {
     // Jail path uses semantic mount paths, not Docker VolumeMount[]
     // Does NOT call buildVolumeMounts, buildContainerArgs, or any Docker code
-    return runJailAgent(
+    result = await runJailAgent(
       group,
       input,
       logsDir,
@@ -832,7 +848,7 @@ export async function runContainerAgent(
       traceId,
       tracedLogger,
     );
-  }
+  } else {
 
   // Docker path only below this point
   const startTime = Date.now();
@@ -865,7 +881,7 @@ export async function runContainerAgent(
     'Spawning container agent',
   );
 
-  return new Promise((resolve) => {
+  result = await new Promise((resolve) => {
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -1197,6 +1213,18 @@ export async function runContainerAgent(
       });
     });
   });
+  }
+
+  // Integrity check: compare CLAUDE.md hash after agent run
+  const postHash = hashFile(claudeMdPath);
+  if (preHash !== null && postHash !== null && preHash !== postHash) {
+    log.warn(
+      { group: group.name, folder: group.folder, preHash, postHash },
+      'CLAUDE.md was modified during agent run',
+    );
+  }
+
+  return result;
 }
 
 export function writeTasksSnapshot(
