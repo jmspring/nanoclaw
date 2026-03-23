@@ -1325,6 +1325,7 @@ export async function createJail(
       'enforce_statfs=1',
       'mount.devfs',
       'devfs_ruleset=10', // Apply restrictive devfs ruleset (see etc/devfs.rules)
+      'securelevel=3',
     );
 
     log.debug({ jailName, params: jailParams.slice(2) }, 'Starting jail');
