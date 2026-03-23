@@ -33,14 +33,28 @@ import {
 import fs from 'fs';
 import path from 'path';
 
-// Skip tests if not in restricted network mode or not on FreeBSD
+// Skip tests if not in restricted network mode, not on FreeBSD, or pf not configured
 const isRestrictedMode = JAIL_CONFIG.networkMode === 'restricted';
 const isFreeBSD = process.platform === 'freebsd';
+let hasPfTables = false;
+if (isFreeBSD && isRestrictedMode) {
+  try {
+    const { execFileSync } = await import('child_process');
+    execFileSync('sudo', ['pfctl', '-t', 'anthropic_api', '-T', 'show'], {
+      stdio: 'pipe',
+    });
+    hasPfTables = true;
+  } catch {
+    // pf tables not configured
+  }
+}
 const skipReason = !isFreeBSD
   ? 'Skipping: not running on FreeBSD'
   : !isRestrictedMode
     ? 'Skipping: NANOCLAW_JAIL_NETWORK_MODE != restricted'
-    : null;
+    : !hasPfTables
+      ? 'Skipping: pf tables not configured'
+      : null;
 
 // Test configuration
 const TEST_TIMEOUT = 30000; // 30s for network tests
@@ -59,7 +73,7 @@ const DNS_CLOUDFLARE = '1.1.1.1';
 const BLOCKED_HOST = 'google.com';
 const BLOCKED_IP = '142.250.64.78'; // google.com IP (not in allowlist)
 
-describe.skipIf(!isFreeBSD || !isRestrictedMode)(
+describe.skipIf(!isFreeBSD || !isRestrictedMode || !hasPfTables)(
   'Jail Network Isolation (restricted mode)',
   () => {
     let jail1: JailCreationResult | null = null;
@@ -118,10 +132,10 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
       it(
         'can reach DNS servers (UDP port 53)',
         async () => {
-          // Test Google DNS
+          // Test Google DNS (use full path — exec "$@" has minimal PATH)
           const resultGoogle = await execInJail(
             GROUP_ID_1,
-            ['nc', '-u', '-z', '-w', '5', DNS_GOOGLE, '53'],
+            ['/usr/bin/nc', '-u', '-z', '-w', '5', DNS_GOOGLE, '53'],
             { timeout: 10000 },
           );
           expect(resultGoogle.code).toBe(0);
@@ -129,7 +143,7 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
           // Test Cloudflare DNS
           const resultCloudflare = await execInJail(
             GROUP_ID_1,
-            ['nc', '-u', '-z', '-w', '5', DNS_CLOUDFLARE, '53'],
+            ['/usr/bin/nc', '-u', '-z', '-w', '5', DNS_CLOUDFLARE, '53'],
             { timeout: 10000 },
           );
           expect(resultCloudflare.code).toBe(0);
@@ -140,10 +154,19 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
       it(
         'can resolve DNS queries',
         async () => {
-          // Test DNS resolution
+          // Requires IP forwarding for DNS round-trip through NAT
+          const { execFileSync } = await import('child_process');
+          const fwd = execFileSync('sysctl', ['-n', 'net.inet.ip.forwarding'], {
+            encoding: 'utf-8',
+          }).trim();
+          if (fwd !== '1') {
+            return; // Skip: IP forwarding disabled
+          }
+
+          // Use explicit DNS server allowed by pf (resolv.conf may point to blocked local DNS)
           const result = await execInJail(
             GROUP_ID_1,
-            ['host', '-W', '5', 'api.anthropic.com'],
+            ['/usr/bin/host', '-W', '5', 'api.anthropic.com', DNS_GOOGLE],
             { timeout: 10000 },
           );
           expect(result.code).toBe(0);
@@ -155,16 +178,23 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
       it(
         'can reach Anthropic API IP ranges (160.79.104.0/21) on port 443',
         async () => {
-          // Test HTTPS connection to Anthropic API IP range
-          // Note: We test TCP connectivity, not full HTTPS (to avoid cert issues)
+          // Requires IP forwarding (net.inet.ip.forwarding=1) and NAT for outbound traffic
+          const { execFileSync } = await import('child_process');
+          const fwd = execFileSync('sysctl', ['-n', 'net.inet.ip.forwarding'], {
+            encoding: 'utf-8',
+          }).trim();
+          if (fwd !== '1') {
+            // Skip: IP forwarding disabled, outbound NAT won't work
+            return;
+          }
+
           const result = await execInJail(
             GROUP_ID_1,
-            ['nc', '-z', '-w', '5', ANTHROPIC_TEST_IP, '443'],
+            ['/usr/bin/nc', '-z', '-w', '5', ANTHROPIC_TEST_IP, '443'],
             { timeout: 10000 },
           );
 
           // Exit code 0 means connection succeeded
-          // Exit code 1 means connection refused/timeout (blocked by pf)
           expect(result.code).toBe(0);
         },
         TEST_TIMEOUT,
@@ -173,11 +203,10 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
       it(
         'can reach credential proxy on host gateway (port 3001)',
         async () => {
-          // Get the jail's gateway IP (10.99.N.1 where N is the epair number)
-          // The jail uses 10.99.N.2 and gateway is 10.99.N.1
+          // Get full ifconfig output and parse in JS (no shell pipes in execInJail)
           const ifconfigResult = await execInJail(
             GROUP_ID_1,
-            ['ifconfig', 'epair', '|', 'grep', 'inet'],
+            ['/sbin/ifconfig'],
             { timeout: 5000 },
           );
 
@@ -190,15 +219,13 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
           const gatewayIP = `${jailIPMatch![1]}.1`;
 
           // Test connection to credential proxy port
-          // Note: We only test TCP connectivity - the proxy may not be running
           const result = await execInJail(
             GROUP_ID_1,
-            ['nc', '-z', '-w', '2', gatewayIP, '3001'],
+            ['/usr/bin/nc', '-z', '-w', '2', gatewayIP, '3001'],
             { timeout: 5000 },
           );
 
           // Connection may fail if proxy not running, but shouldn't timeout
-          // (timeout = blocked by firewall, refused = port closed but reachable)
           // Exit code 0 = success, 1 = connection refused (allowed but not listening)
           expect([0, 1]).toContain(result.code);
         },
@@ -210,11 +237,9 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
       it(
         'cannot reach arbitrary internet hosts (google.com)',
         async () => {
-          // Test DNS resolution fails for non-Anthropic hosts
-          // This should timeout or fail because pf blocks outbound to arbitrary IPs
           const result = await execInJail(
             GROUP_ID_1,
-            ['nc', '-z', '-w', '3', BLOCKED_IP, '443'],
+            ['/usr/bin/nc', '-z', '-w', '3', BLOCKED_IP, '443'],
             { timeout: 10000 },
           );
 
@@ -227,10 +252,9 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
       it(
         'cannot reach arbitrary ports on allowed IPs',
         async () => {
-          // Test that even Anthropic IPs are blocked on non-443 ports
           const result = await execInJail(
             GROUP_ID_1,
-            ['nc', '-z', '-w', '3', ANTHROPIC_TEST_IP, '80'],
+            ['/usr/bin/nc', '-z', '-w', '3', ANTHROPIC_TEST_IP, '80'],
             { timeout: 10000 },
           );
 
@@ -243,10 +267,9 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
       it(
         'cannot reach DNS on TCP (only UDP allowed)',
         async () => {
-          // Test that DNS on TCP is blocked (pf allows UDP only)
           const result = await execInJail(
             GROUP_ID_1,
-            ['nc', '-z', '-w', '3', DNS_GOOGLE, '53'],
+            ['/usr/bin/nc', '-z', '-w', '3', DNS_GOOGLE, '53'],
             { timeout: 10000 },
           );
 
@@ -261,10 +284,10 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
       it(
         'jail 1 cannot reach jail 2 IP',
         async () => {
-          // Get jail 2's IP address
+          // Get jail 2's IP address (no shell pipes — parse in JS)
           const jail2IPResult = await execInJail(
             GROUP_ID_2,
-            ['ifconfig', 'epair', '|', 'grep', 'inet', '|', 'head', '-1'],
+            ['/sbin/ifconfig'],
             { timeout: 5000 },
           );
 
@@ -277,7 +300,7 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
           // Try to reach jail 2 from jail 1 (should be blocked by pf)
           const result = await execInJail(
             GROUP_ID_1,
-            ['nc', '-z', '-w', '3', jail2IP, '22'],
+            ['/usr/bin/nc', '-z', '-w', '3', jail2IP, '22'],
             { timeout: 10000 },
           );
 
@@ -293,7 +316,7 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
           // Get jail 1's IP address
           const jail1IPResult = await execInJail(
             GROUP_ID_1,
-            ['ifconfig', 'epair', '|', 'grep', 'inet', '|', 'head', '-1'],
+            ['/sbin/ifconfig'],
             { timeout: 5000 },
           );
 
@@ -306,7 +329,7 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
           // Try to reach jail 1 from jail 2 (should be blocked by pf)
           const result = await execInJail(
             GROUP_ID_2,
-            ['nc', '-z', '-w', '3', jail1IP, '22'],
+            ['/usr/bin/nc', '-z', '-w', '3', jail1IP, '22'],
             { timeout: 10000 },
           );
 
@@ -321,10 +344,10 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
       it(
         'cannot reach host SSH (port 22)',
         async () => {
-          // Get default gateway (host IP)
+          // Get default gateway (host IP) — no shell pipes, parse in JS
           const routeResult = await execInJail(
             GROUP_ID_1,
-            ['netstat', '-rn', '|', 'grep', 'default'],
+            ['/usr/bin/netstat', '-rn'],
             { timeout: 5000 },
           );
 
@@ -335,7 +358,7 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
           // Try to reach host SSH (should be blocked except port 3001)
           const result = await execInJail(
             GROUP_ID_1,
-            ['nc', '-z', '-w', '3', gatewayIP, '22'],
+            ['/usr/bin/nc', '-z', '-w', '3', gatewayIP, '22'],
             { timeout: 10000 },
           );
 
@@ -348,10 +371,9 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
       it(
         'cannot reach host HTTP (port 80)',
         async () => {
-          // Get default gateway (host IP)
           const routeResult = await execInJail(
             GROUP_ID_1,
-            ['netstat', '-rn', '|', 'grep', 'default'],
+            ['/usr/bin/netstat', '-rn'],
             { timeout: 5000 },
           );
 
@@ -362,7 +384,7 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
           // Try to reach host HTTP
           const result = await execInJail(
             GROUP_ID_1,
-            ['nc', '-z', '-w', '3', gatewayIP, '80'],
+            ['/usr/bin/nc', '-z', '-w', '3', gatewayIP, '80'],
             { timeout: 10000 },
           );
 
@@ -398,8 +420,9 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode)(
           });
 
           // Check for key rules from etc/pf-nanoclaw.conf
+          // pf displays "port = 3001" in rule output
           expect(result).toContain('10.99.0.0/24'); // Jail network
-          expect(result).toContain('port 3001'); // Credential proxy
+          expect(result).toMatch(/port\s*=?\s*3001/); // Credential proxy
         },
         TEST_TIMEOUT,
       );

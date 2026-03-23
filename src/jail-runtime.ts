@@ -899,9 +899,8 @@ function validateJailMount(mount: JailMount): void {
     );
   }
 
-  // Check for path traversal in hostPath
-  const normalizedHostPath = path.normalize(mount.hostPath);
-  if (normalizedHostPath.includes('..')) {
+  // Check for path traversal in hostPath (check raw path — normalize resolves ../)
+  if (mount.hostPath.split(path.sep).includes('..')) {
     throw new Error(
       `Security: jail mount hostPath contains path traversal: "${mount.hostPath}"`,
     );
@@ -925,8 +924,7 @@ function validateJailMount(mount: JailMount): void {
     );
   }
 
-  const normalizedJailPath = path.normalize(mount.jailPath);
-  if (normalizedJailPath.includes('..')) {
+  if (mount.jailPath.split(path.sep).includes('..')) {
     throw new Error(
       `Security: jail mount jailPath contains path traversal: "${mount.jailPath}"`,
     );
@@ -1089,7 +1087,9 @@ async function createMountPoints(
   const resolvedJailRoot = path.resolve(jailPath);
 
   for (const mount of mounts) {
-    const targetPath = path.resolve(jailPath, mount.jailPath);
+    // Strip leading / so path.resolve appends inside jailPath instead of ignoring it
+    const relativeMountPath = mount.jailPath.replace(/^\//, '');
+    const targetPath = path.resolve(jailPath, relativeMountPath);
 
     // Paranoid check: target must be within jail root (defense in depth)
     if (
@@ -1117,8 +1117,9 @@ async function mountNullfs(
   const resolvedJailRoot = path.resolve(jailPath);
 
   for (const mount of mounts) {
-    // Canonicalize paths with realpath-style resolution
-    const targetPath = path.resolve(jailPath, mount.jailPath);
+    // Strip leading / so path.resolve appends inside jailPath instead of ignoring it
+    const relativeMountPath = mount.jailPath.replace(/^\//, '');
+    const targetPath = path.resolve(jailPath, relativeMountPath);
 
     // Paranoid check: target must be within jail root (defense in depth)
     if (
@@ -1421,7 +1422,8 @@ export async function execInJail(
     // Wrap command in shell to set umask 002 for group-writable files.
     // This ensures files created by node inside the jail are writable by
     // the host user (jims) via the shared wheel group.
-    args.push('sh', '-c', 'umask 002; exec "$@"', '--');
+    // Note: use '_' as $0 placeholder, not '--' which jexec consumes as end-of-options
+    args.push('sh', '-c', 'umask 002; exec "$@"', '_');
 
     // Environment variables must be passed via env command inside the jail
     // FreeBSD jexec does not support -e flags
@@ -1574,7 +1576,8 @@ export function spawnInJail(
     args.push(...command.slice(3));
   } else {
     // For non-shell commands, wrap in sh -c to set umask
-    args.push('sh', '-c', `umask 002; exec "$@"`, '--', ...command);
+    // Note: use '_' as $0 placeholder, not '--' which jexec consumes as end-of-options
+    args.push('sh', '-c', `umask 002; exec "$@"`, '_', ...command);
   }
 
   logger.debug(

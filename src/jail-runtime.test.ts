@@ -11,6 +11,11 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
+// Mock env.js so config.ts doesn't crash reading .env with mocked fs
+vi.mock('./env.js', () => ({
+  readEnvFile: () => ({}),
+}));
+
 // Mock fs
 vi.mock('fs');
 
@@ -91,6 +96,7 @@ describe('jail-runtime dependency injection', () => {
 
   describe('stopJail', () => {
     it('stops a running jail successfully', async () => {
+      const expectedName = getJailName('test-group');
       // Mock jail as running
       mockSudoExecSync.mockReturnValue('123\n');
       // Mock successful jail stop
@@ -100,17 +106,18 @@ describe('jail-runtime dependency injection', () => {
 
       // Should check if running
       expect(mockSudoExecSync).toHaveBeenCalledWith(
-        ['jls', '-j', 'nanoclaw_test_group', 'jid'],
+        ['jls', '-j', expectedName, 'jid'],
         { stdio: 'pipe' },
       );
       // Should stop the jail
       expect(mockSudoExec).toHaveBeenCalledWith(
-        ['jail', '-r', 'nanoclaw_test_group'],
+        ['jail', '-r', expectedName],
         { timeout: 15000 },
       );
     });
 
     it('does nothing when jail is not running', async () => {
+      const expectedName = getJailName('test-group');
       // Mock jail as not running
       mockSudoExecSync.mockReturnValue('');
 
@@ -118,7 +125,7 @@ describe('jail-runtime dependency injection', () => {
 
       // Should check if running
       expect(mockSudoExecSync).toHaveBeenCalledWith(
-        ['jls', '-j', 'nanoclaw_test_group', 'jid'],
+        ['jls', '-j', expectedName, 'jid'],
         { stdio: 'pipe' },
       );
       // Should NOT try to stop
@@ -126,6 +133,7 @@ describe('jail-runtime dependency injection', () => {
     });
 
     it('force stops jail when graceful stop fails', async () => {
+      const expectedName = getJailName('test-group');
       // Mock jail as running
       mockSudoExecSync.mockReturnValue('123\n');
       // Mock graceful stop failing, then force stop succeeding
@@ -139,19 +147,19 @@ describe('jail-runtime dependency injection', () => {
       // Should attempt graceful stop first
       expect(mockSudoExec).toHaveBeenNthCalledWith(
         1,
-        ['jail', '-r', 'nanoclaw_test_group'],
+        ['jail', '-r', expectedName],
         { timeout: 15000 },
       );
       // Should kill processes
       expect(mockSudoExec).toHaveBeenNthCalledWith(
         2,
-        ['jexec', 'nanoclaw_test_group', 'kill', '-9', '-1'],
+        ['jexec', expectedName, 'kill', '-9', '-1'],
         { timeout: 5000 },
       );
       // Should force stop
       expect(mockSudoExec).toHaveBeenNthCalledWith(
         3,
-        ['jail', '-r', 'nanoclaw_test_group'],
+        ['jail', '-r', expectedName],
         { timeout: 10000 },
       );
     });
@@ -167,22 +175,26 @@ describe('jail-runtime dependency injection', () => {
   });
 
   describe('sanitizeJailName', () => {
-    it('replaces non-alphanumeric characters with underscores', () => {
-      expect(sanitizeJailName('test@group.com')).toBe('test_group_com');
-      expect(sanitizeJailName('user-123')).toBe('user_123');
-      expect(sanitizeJailName('test group')).toBe('test_group');
+    it('replaces non-alphanumeric characters with underscores and appends hash', () => {
+      expect(sanitizeJailName('test@group.com')).toMatch(/^test_group_com_[0-9a-f]{6}$/);
+      expect(sanitizeJailName('user-123')).toMatch(/^user_123_[0-9a-f]{6}$/);
+      expect(sanitizeJailName('test group')).toMatch(/^test_group_[0-9a-f]{6}$/);
     });
 
-    it('preserves alphanumeric and underscore characters', () => {
-      expect(sanitizeJailName('test_group_123')).toBe('test_group_123');
-      expect(sanitizeJailName('alphanumeric123')).toBe('alphanumeric123');
+    it('preserves alphanumeric and underscore characters and appends hash', () => {
+      expect(sanitizeJailName('test_group_123')).toMatch(/^test_group_123_[0-9a-f]{6}$/);
+      expect(sanitizeJailName('alphanumeric123')).toMatch(/^alphanumeric123_[0-9a-f]{6}$/);
+    });
+
+    it('produces deterministic output', () => {
+      expect(sanitizeJailName('test')).toBe(sanitizeJailName('test'));
     });
   });
 
   describe('getJailName', () => {
     it('generates jail name with nanoclaw prefix', () => {
-      expect(getJailName('test-group')).toBe('nanoclaw_test_group');
-      expect(getJailName('user@example.com')).toBe('nanoclaw_user_example_com');
+      expect(getJailName('test-group')).toMatch(/^nanoclaw_test_group_[0-9a-f]{6}$/);
+      expect(getJailName('user@example.com')).toMatch(/^nanoclaw_user_example_com_[0-9a-f]{6}$/);
     });
   });
 });
