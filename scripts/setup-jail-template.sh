@@ -9,21 +9,36 @@
 # 4. Verifies everything works
 # 5. Re-snapshots the template
 #
+# Usage:
+#   ./setup-jail-template.sh                  # build default "template"
+#   ./setup-jail-template.sh template-v2      # build "template-v2" (blue/green)
+#
+# Blue/green workflow:
+#   1. ./setup-jail-template.sh template-v2
+#   2. export NANOCLAW_TEMPLATE_DATASET=zroot/nanoclaw/jails/template-v2
+#   3. Restart NanoClaw — new jails use the new template, old jails keep running
+#
 # Requirements:
 # - Run as a user with passwordless sudo access
 #   See docs/TEMPLATE_SETUP.md for detailed sudo requirements and minimal
 #   sudoers configuration
-# - ZFS dataset zroot/nanoclaw/jails/template must exist
+# - ZFS dataset for the parent (e.g., zroot/nanoclaw/jails) must exist
 # - Template must already have node24 and npm-node24 installed via pkg
 #
 
 set -eu
 
-# Configuration
-TEMPLATE_PATH="/home/jims/code/nanoclaw/jails/template"
-TEMPLATE_DATASET="zroot/nanoclaw/jails/template"
+# Optional argument: template name (default: "template")
+TEMPLATE_NAME="${1:-template}"
+
+# Configuration — override via environment variables or NANOCLAW_ROOT
+NANOCLAW_ROOT="${NANOCLAW_ROOT:-/home/jims/code/nanoclaw}"
+JAILS_PATH="${NANOCLAW_JAILS_PATH:-${NANOCLAW_ROOT}/jails}"
+JAILS_DATASET="${NANOCLAW_JAILS_DATASET:-zroot/nanoclaw/jails}"
+TEMPLATE_PATH="${JAILS_PATH}/${TEMPLATE_NAME}"
+TEMPLATE_DATASET="${JAILS_DATASET}/${TEMPLATE_NAME}"
 SNAPSHOT_NAME="base"
-AGENT_RUNNER_SRC="/home/jims/code/nanoclaw/src/container/agent-runner"
+AGENT_RUNNER_SRC="${NANOCLAW_ROOT}/src/container/agent-runner"
 TEMP_JAIL_NAME="nanoclaw_template_setup"
 
 # Colors for output
@@ -71,14 +86,18 @@ cleanup() {
 trap cleanup EXIT
 
 # Check prerequisites
+log "Template name: $TEMPLATE_NAME"
+log "Template dataset: $TEMPLATE_DATASET"
 log "Checking prerequisites..."
+
+# Create template dataset if it doesn't exist (blue/green: new template name)
+if ! sudo zfs list "$TEMPLATE_DATASET" >/dev/null 2>&1; then
+    log "Creating template dataset: $TEMPLATE_DATASET"
+    sudo zfs create "$TEMPLATE_DATASET"
+fi
 
 if [ ! -d "$TEMPLATE_PATH" ]; then
     error "Template path does not exist: $TEMPLATE_PATH"
-fi
-
-if ! sudo zfs list "$TEMPLATE_DATASET" >/dev/null 2>&1; then
-    error "Template dataset does not exist: $TEMPLATE_DATASET"
 fi
 
 if [ ! -d "$AGENT_RUNNER_SRC" ]; then
@@ -369,4 +388,10 @@ log "  - Agent runner dependencies at /app/node_modules"
 log ""
 log "Template snapshot: $FULL_SNAPSHOT"
 log ""
+if [ "$TEMPLATE_NAME" != "template" ]; then
+    log "To activate this template, set:"
+    log "  export NANOCLAW_TEMPLATE_DATASET=$TEMPLATE_DATASET"
+    log "Then restart NanoClaw. Old jails keep running on the previous template."
+    log ""
+fi
 log "The jail template is ready for use."

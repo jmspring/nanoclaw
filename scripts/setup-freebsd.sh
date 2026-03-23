@@ -29,7 +29,7 @@ NC='\033[0m'
 
 print_header() {
     echo ""
-    echo "${BLUE}${BOLD}=== [$1/9] $2 ===${NC}"
+    echo "${BLUE}${BOLD}=== [$1/10] $2 ===${NC}"
     echo ""
 }
 
@@ -783,10 +783,43 @@ EOF
 }
 
 # =============================================================================
-# Section 9: Summary
+# Section 9: rc.d Service
+# =============================================================================
+setup_rcd_service() {
+    print_header 9 "rc.d Service"
+
+    RCD_SRC="$NANOCLAW_SRC/etc/rc.d/nanoclaw"
+    RCD_DEST="/usr/local/etc/rc.d/nanoclaw"
+
+    if [ ! -f "$RCD_SRC" ]; then
+        log_info "rc.d script not found in source — skipping"
+        return 0
+    fi
+
+    log_info "Installing rc.d service script..."
+    cp "$RCD_SRC" "$RCD_DEST"
+    chmod 755 "$RCD_DEST"
+    log_success "rc.d script installed at $RCD_DEST"
+
+    # Enable the service
+    if sysrc -c nanoclaw_enable="YES" 2>/dev/null; then
+        log_skip "nanoclaw already enabled in rc.conf"
+    else
+        sysrc nanoclaw_enable="YES"
+        log_success "nanoclaw enabled in rc.conf"
+    fi
+
+    # Set the user
+    sysrc nanoclaw_user="$NANOCLAW_USER"
+    sysrc nanoclaw_dir="$NANOCLAW_SRC"
+    log_success "rc.conf configured (user=$NANOCLAW_USER, dir=$NANOCLAW_SRC)"
+}
+
+# =============================================================================
+# Section 10: Summary
 # =============================================================================
 print_summary() {
-    print_header 9 "Setup Complete"
+    print_header 10 "Setup Complete"
 
     echo "${GREEN}${BOLD}NanoClaw FreeBSD setup is complete!${NC}"
     echo ""
@@ -826,6 +859,7 @@ print_summary() {
     echo "     - This blocks all egress except api.anthropic.com"
     echo ""
     echo "${BOLD}Useful Commands:${NC}"
+    echo "  Start/stop service:    service nanoclaw start|stop|restart|status"
     echo "  List running jails:    sudo jls"
     echo "  Check pf status:       sudo pfctl -s info"
     echo "  View pf rules:         sudo pfctl -s rules"
@@ -858,6 +892,7 @@ main() {
     setup_jail_template
     setup_pf
     clone_nanoclaw
+    setup_rcd_service
     print_summary
 }
 

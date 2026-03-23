@@ -126,14 +126,17 @@ export type SudoExecutorSync = (
   options?: SudoExecOptions,
 ) => string;
 
-/** Jail configuration - adjust paths for your environment */
+/** Root path for NanoClaw data — override via NANOCLAW_ROOT env var */
+const NANOCLAW_ROOT = process.env.NANOCLAW_ROOT || '/home/jims/code/nanoclaw';
+
+/** Jail configuration — paths derived from NANOCLAW_ROOT with per-path overrides */
 export const JAIL_CONFIG: JailConfig = {
-  templateDataset: 'zroot/nanoclaw/jails/template',
-  templateSnapshot: 'base',
-  jailsDataset: 'zroot/nanoclaw/jails',
-  jailsPath: '/home/jims/code/nanoclaw/jails',
-  workspacesPath: '/home/jims/code/nanoclaw/workspaces',
-  ipcPath: '/home/jims/code/nanoclaw/ipc',
+  templateDataset: process.env.NANOCLAW_TEMPLATE_DATASET || 'zroot/nanoclaw/jails/template',
+  templateSnapshot: process.env.NANOCLAW_TEMPLATE_SNAPSHOT || 'base',
+  jailsDataset: process.env.NANOCLAW_JAILS_DATASET || 'zroot/nanoclaw/jails',
+  jailsPath: process.env.NANOCLAW_JAILS_PATH || path.join(NANOCLAW_ROOT, 'jails'),
+  workspacesPath: process.env.NANOCLAW_WORKSPACES_PATH || path.join(NANOCLAW_ROOT, 'workspaces'),
+  ipcPath: process.env.NANOCLAW_IPC_PATH || path.join(NANOCLAW_ROOT, 'ipc'),
   // Network mode: "inherit" (ip4=inherit) or "restricted" (vnet with epair and pf)
   // IMPORTANT: Changing network mode requires updating pf configuration.
   // See docs/network-mode-migration.md or run scripts/switch-network-mode.sh
@@ -456,6 +459,11 @@ function getJailPath(jailName: string): string {
 /** Get the fstab path for a jail */
 function getFstabPath(jailName: string): string {
   return path.join(JAIL_CONFIG.jailsPath, `${jailName}.fstab`);
+}
+
+/** Get the jail.conf path for a jail */
+function getConfPath(jailName: string): string {
+  return path.join(JAIL_CONFIG.jailsPath, `${jailName}.conf`);
 }
 
 /**
@@ -1307,37 +1315,32 @@ export async function createJail(
       await setupJailResolv(jailPath);
     }
 
-    // Create the jail
-    const jailParams = [
-      'jail',
-      '-c',
-      `name=${jailName}`,
-      `path=${jailPath}`,
-      `host.hostname=${jailName}`,
-      'persist',
-    ];
-
-    // Network configuration
+    // Build network configuration for jail.conf
+    let networkConfig: string;
     if (JAIL_CONFIG.networkMode === 'inherit') {
-      jailParams.push('ip4=inherit', 'ip6=inherit');
-    } else if (JAIL_CONFIG.networkMode === 'restricted') {
-      // Use vnet with epair interface
-      jailParams.push('vnet');
-      if (epairInfo) {
-        jailParams.push(`vnet.interface=${epairInfo.jailIface}`);
-      }
+      networkConfig = '  ip4 = inherit;\n  ip6 = inherit;';
+    } else if (JAIL_CONFIG.networkMode === 'restricted' && epairInfo) {
+      networkConfig = `  vnet;\n  vnet.interface = "${epairInfo.jailIface}";`;
+    } else {
+      networkConfig = '  vnet;';
     }
 
-    // Jail security settings
-    jailParams.push(
-      'enforce_statfs=2',
-      'mount.devfs',
-      'devfs_ruleset=10', // Apply restrictive devfs ruleset (see etc/devfs.rules)
-      'securelevel=3',
-    );
-
-    log.debug({ jailName, params: jailParams.slice(2) }, 'Starting jail');
-    await sudoExec(jailParams);
+    // Write jail.conf and create jail via jail -f
+    const confPath = getConfPath(jailName);
+    const confContent = `${jailName} {
+  path = "${jailPath}";
+  host.hostname = "${jailName}";
+  persist;
+  enforce_statfs = 2;
+  mount.devfs;
+  devfs_ruleset = 10;
+  securelevel = 3;
+${networkConfig}
+}
+`;
+    fs.writeFileSync(confPath, confContent);
+    log.debug({ jailName, confPath }, 'Wrote jail.conf');
+    await sudoExec(['jail', '-f', confPath, '-c', jailName]);
 
     // Apply resource limits to prevent runaway processes
     await applyRctlLimits(jailName);
@@ -1782,6 +1785,7 @@ export async function cleanupJail(
   const dataset = getJailDataset(jailName);
   const jailPath = getJailPath(jailName);
   const fstabPath = getFstabPath(jailName);
+  const confPath = getConfPath(jailName);
 
   logger.info({ jailName, groupId }, 'Cleaning up jail');
   logCleanupAudit('CLEANUP_START', jailName, 'INFO');
@@ -1928,6 +1932,22 @@ export async function cleanupJail(
           'Could not remove fstab',
         );
         logCleanupAudit('REMOVE_FSTAB', jailName, 'FAILED', error);
+        errors.push(error as Error);
+      }
+    }
+
+    // Remove jail.conf file
+    if (fs.existsSync(confPath)) {
+      try {
+        fs.unlinkSync(confPath);
+        logger.debug({ confPath, jailName }, 'Removed jail.conf');
+        logCleanupAudit('REMOVE_CONF', jailName, 'SUCCESS');
+      } catch (error) {
+        logger.warn(
+          { confPath, jailName, groupId, err: error },
+          'Could not remove jail.conf',
+        );
+        logCleanupAudit('REMOVE_CONF', jailName, 'FAILED', error);
         errors.push(error as Error);
       }
     }
