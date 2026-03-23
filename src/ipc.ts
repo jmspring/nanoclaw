@@ -68,11 +68,14 @@ export function startIpcWatcher(deps: IpcDeps): void {
       // Process messages from this group's IPC directory
       try {
         if (fs.existsSync(messagesDir)) {
+          const processingDir = path.join(messagesDir, 'processing');
+          fs.mkdirSync(processingDir, { recursive: true });
           const messageFiles = fs
             .readdirSync(messagesDir)
             .filter((f) => f.endsWith('.json'));
           for (const file of messageFiles) {
             const filePath = path.join(messagesDir, file);
+            const processingPath = path.join(processingDir, file);
             try {
               const stat = fs.statSync(filePath);
               if (stat.size > IPC_MAX_FILE_SIZE) {
@@ -80,7 +83,9 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 fs.unlinkSync(filePath);
                 continue;
               }
-              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              // Atomic: rename before reading to prevent double-processing
+              fs.renameSync(filePath, processingPath);
+              const data = JSON.parse(fs.readFileSync(processingPath, 'utf-8'));
               if (data.type === 'message' && data.chatJid && data.text) {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
@@ -100,7 +105,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   );
                 }
               }
-              fs.unlinkSync(filePath);
+              fs.unlinkSync(processingPath);
             } catch (err) {
               logger.error(
                 { file, sourceGroup, err },
@@ -108,10 +113,14 @@ export function startIpcWatcher(deps: IpcDeps): void {
               );
               const errorDir = path.join(ipcBaseDir, 'errors');
               fs.mkdirSync(errorDir, { recursive: true });
-              fs.renameSync(
-                filePath,
-                path.join(errorDir, `${sourceGroup}-${file}`),
-              );
+              // Move from processing (or original) to errors
+              const sourcePath = fs.existsSync(processingPath) ? processingPath : filePath;
+              if (fs.existsSync(sourcePath)) {
+                fs.renameSync(
+                  sourcePath,
+                  path.join(errorDir, `${sourceGroup}-${file}`),
+                );
+              }
             }
           }
         }
@@ -125,11 +134,14 @@ export function startIpcWatcher(deps: IpcDeps): void {
       // Process tasks from this group's IPC directory
       try {
         if (fs.existsSync(tasksDir)) {
+          const processingDir = path.join(tasksDir, 'processing');
+          fs.mkdirSync(processingDir, { recursive: true });
           const taskFiles = fs
             .readdirSync(tasksDir)
             .filter((f) => f.endsWith('.json'));
           for (const file of taskFiles) {
             const filePath = path.join(tasksDir, file);
+            const processingPath = path.join(processingDir, file);
             try {
               const stat = fs.statSync(filePath);
               if (stat.size > IPC_MAX_FILE_SIZE) {
@@ -137,10 +149,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 fs.unlinkSync(filePath);
                 continue;
               }
-              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              // Atomic: rename before reading to prevent double-processing
+              fs.renameSync(filePath, processingPath);
+              const data = JSON.parse(fs.readFileSync(processingPath, 'utf-8'));
               // Pass source group identity to processTaskIpc for authorization
               await processTaskIpc(data, sourceGroup, isMain, deps);
-              fs.unlinkSync(filePath);
+              fs.unlinkSync(processingPath);
             } catch (err) {
               logger.error(
                 { file, sourceGroup, err },
@@ -148,10 +162,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
               );
               const errorDir = path.join(ipcBaseDir, 'errors');
               fs.mkdirSync(errorDir, { recursive: true });
-              fs.renameSync(
-                filePath,
-                path.join(errorDir, `${sourceGroup}-${file}`),
-              );
+              const sourcePath = fs.existsSync(processingPath) ? processingPath : filePath;
+              if (fs.existsSync(sourcePath)) {
+                fs.renameSync(
+                  sourcePath,
+                  path.join(errorDir, `${sourceGroup}-${file}`),
+                );
+              }
             }
           }
         }

@@ -277,7 +277,7 @@ async function cleanupJailTempFiles(groupId: string): Promise<void> {
     tempPaths = new Set(['/tmp/dist', '/tmp/input.json']);
   }
 
-  if (!isJailRunning(jailName)) {
+  if (!(await isJailRunningAsync(jailName))) {
     logger.debug(
       { groupId, jailName },
       'Jail not running, skipping temp file cleanup',
@@ -330,6 +330,8 @@ function logCleanupAudit(
 
   try {
     fs.appendFileSync(CLEANUP_AUDIT_LOG, logLine);
+    // Ensure audit log is not world-readable (owner rw, group r)
+    fs.chmodSync(CLEANUP_AUDIT_LOG, 0o640);
   } catch (err) {
     logger.error(
       { err, logFile: CLEANUP_AUDIT_LOG },
@@ -855,7 +857,7 @@ async function setupJailResolv(jailPath: string): Promise<void> {
   }
 }
 
-/** Check if a jail exists and is running */
+/** Check if a jail exists and is running (synchronous — use only in sync startup paths) */
 export function isJailRunning(jailName: string): boolean {
   const sudoExecSync = getSudoExecSync();
   try {
@@ -865,6 +867,49 @@ export function isJailRunning(jailName: string): boolean {
     return output.trim().length > 0;
   } catch {
     return false;
+  }
+}
+
+/** Check if a jail exists and is running (async — preferred in hot paths) */
+export async function isJailRunningAsync(jailName: string): Promise<boolean> {
+  const sudoExec = getSudoExec();
+  try {
+    const result = await sudoExec(['jls', '-j', jailName, 'jid'], {
+      stdio: 'pipe',
+    });
+    return result.stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Get ZFS pool available space in bytes, or -1 on error */
+function getZfsPoolAvailable(poolName: string): number {
+  try {
+    const output = execFileSync(
+      'zfs',
+      ['get', '-Hp', '-o', 'value', 'available', poolName],
+      { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
+    );
+    const bytes = parseInt(output.trim(), 10);
+    return isNaN(bytes) ? -1 : bytes;
+  } catch {
+    return -1;
+  }
+}
+
+/** Get ZFS pool used space in bytes, or -1 on error */
+function getZfsPoolUsed(poolName: string): number {
+  try {
+    const output = execFileSync(
+      'zfs',
+      ['get', '-Hp', '-o', 'value', 'used', poolName],
+      { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
+    );
+    const bytes = parseInt(output.trim(), 10);
+    return isNaN(bytes) ? -1 : bytes;
+  } catch {
+    return -1;
   }
 }
 
@@ -1251,10 +1296,26 @@ export async function createJail(
     );
   }
 
+  // ZFS space pre-check: refuse to create if pool is critically low
+  const poolName = JAIL_CONFIG.jailsDataset.split('/')[0];
+  const availBytes = getZfsPoolAvailable(poolName);
+  const usedBytes = getZfsPoolUsed(poolName);
+  if (availBytes > 0 && usedBytes > 0) {
+    const totalBytes = availBytes + usedBytes;
+    const pctAvail = (availBytes / totalBytes) * 100;
+    if (pctAvail < 5) {
+      throw new Error(
+        `Cannot create jail: ZFS pool "${poolName}" has only ${pctAvail.toFixed(1)}% free space ` +
+          `(${Math.round(availBytes / 1024 / 1024)}MB available of ${Math.round(totalBytes / 1024 / 1024)}MB total). ` +
+          `Free up space before creating new jails.`,
+      );
+    }
+  }
+
   log.info({ jailName, groupId }, 'Creating jail');
 
   // Check if jail already exists
-  if (isJailRunning(jailName)) {
+  if (await isJailRunningAsync(jailName)) {
     log.info({ jailName }, 'Jail already running, stopping first');
     await stopJail(groupId);
   }
@@ -1410,7 +1471,7 @@ export async function execInJail(
   const jailName = getJailName(groupId);
   const { env = {}, cwd, timeout, signal, onStdout, onStderr } = options;
 
-  if (!isJailRunning(jailName)) {
+  if (!(await isJailRunningAsync(jailName))) {
     throw new Error(`Jail ${jailName} is not running`);
   }
 
@@ -1603,7 +1664,7 @@ export async function stopJail(groupId: string): Promise<void> {
   const sudoExec = getSudoExec();
   const jailName = getJailName(groupId);
 
-  if (!isJailRunning(jailName)) {
+  if (!(await isJailRunningAsync(jailName))) {
     logger.debug({ jailName, groupId }, 'Jail not running');
     return;
   }
@@ -1660,7 +1721,7 @@ async function forceCleanup(
   const errors = [];
 
   // 1. Kill all processes in jail (if still running)
-  if (isJailRunning(jailName)) {
+  if (await isJailRunningAsync(jailName)) {
     try {
       await sudoExec(['jexec', jailName, 'kill', '-9', '-1'], {
         timeout: JAIL_QUICK_OP_TIMEOUT,
@@ -1814,12 +1875,12 @@ export async function cleanupJail(
 
   try {
     // Stop jail if running (with retry)
-    if (isJailRunning(jailName)) {
+    if (await isJailRunningAsync(jailName)) {
       try {
         await retryWithBackoff(
           async () => {
             await stopJail(groupId);
-            if (isJailRunning(jailName)) {
+            if (await isJailRunningAsync(jailName)) {
               throw new Error('Jail still running after stop');
             }
           },

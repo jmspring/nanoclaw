@@ -3,6 +3,7 @@
  * Provides /health and /metrics endpoints for external monitoring.
  */
 import { execFileSync } from 'child_process';
+import fs from 'fs';
 import http from 'http';
 import { logger } from './logger.js';
 
@@ -18,11 +19,13 @@ interface HealthStatus {
   healthy: boolean;
   checks: {
     templateSnapshot: boolean;
+    templateIntegrity: boolean;
     zfsPoolSpace: boolean;
     pfEnabled: boolean;
   };
   details: {
     templateSnapshot?: string;
+    templateIntegrity?: string;
     zfsPoolAvailBytes?: number;
     pfStatus?: string;
   };
@@ -91,6 +94,52 @@ function checkTemplateSnapshot(
 }
 
 /**
+ * Verify template integrity by comparing current SHA-256 against stored manifest.
+ * @param templateDataset - The template dataset (e.g., zroot/nanoclaw/jails/template)
+ * @param snapshotName - The snapshot name (e.g., base)
+ * @param jailsPath - Path to the jails directory
+ * @returns Object with ok flag and detail message
+ */
+function verifyTemplateIntegrity(
+  templateDataset: string,
+  snapshotName: string,
+  jailsPath: string,
+): { ok: boolean; detail: string } {
+  const templateName = templateDataset.split('/').pop() || 'template';
+  const manifestPath = `${jailsPath}/${templateName}.sha256`;
+
+  try {
+    if (!fs.existsSync(manifestPath)) {
+      return { ok: true, detail: 'no manifest (skipped)' };
+    }
+
+    const expectedHash = fs.readFileSync(manifestPath, 'utf-8').trim();
+    if (!expectedHash) {
+      return { ok: true, detail: 'empty manifest (skipped)' };
+    }
+
+    const snapshot = `${templateDataset}@${snapshotName}`;
+    // Compute current hash via zfs send | sha256
+    const currentHash = execFileSync(
+      'sh',
+      ['-c', `sudo zfs send "${snapshot}" | sha256`],
+      { encoding: 'utf-8', stdio: 'pipe', timeout: 30000 },
+    ).trim();
+
+    if (currentHash === expectedHash) {
+      return { ok: true, detail: 'verified' };
+    }
+    return {
+      ok: false,
+      detail: `mismatch: expected ${expectedHash.slice(0, 16)}..., got ${currentHash.slice(0, 16)}...`,
+    };
+  } catch (err) {
+    logger.warn({ err, manifestPath }, 'Template integrity check failed');
+    return { ok: true, detail: 'check failed (skipped)' };
+  }
+}
+
+/**
  * Get ZFS pool available space in bytes.
  * @param poolName - The ZFS pool name (e.g., zroot)
  * @returns Available bytes or -1 on error
@@ -138,22 +187,26 @@ function checkPfEnabled(): boolean {
  * @param templateDataset - The template dataset
  * @param snapshotName - The snapshot name
  * @param poolName - The ZFS pool name
+ * @param jailsPath - Path to the jails directory (for integrity manifest)
  * @returns Health status object
  */
 function getHealthStatus(
   templateDataset: string,
   snapshotName: string,
   poolName: string,
+  jailsPath: string,
 ): HealthStatus {
   const templateSnapshot = checkTemplateSnapshot(templateDataset, snapshotName);
+  const integrity = verifyTemplateIntegrity(templateDataset, snapshotName, jailsPath);
   const zfsPoolAvailBytes = getZfsPoolAvailable(poolName);
   const zfsPoolSpace = zfsPoolAvailBytes > 0;
   const pfEnabled = checkPfEnabled();
 
   return {
-    healthy: templateSnapshot && zfsPoolSpace,
+    healthy: templateSnapshot && zfsPoolSpace && integrity.ok,
     checks: {
       templateSnapshot,
+      templateIntegrity: integrity.ok,
       zfsPoolSpace,
       pfEnabled,
     },
@@ -161,6 +214,7 @@ function getHealthStatus(
       templateSnapshot: templateSnapshot
         ? `${templateDataset}@${snapshotName}`
         : 'not found',
+      templateIntegrity: integrity.detail,
       zfsPoolAvailBytes: zfsPoolAvailBytes > 0 ? zfsPoolAvailBytes : undefined,
       pfStatus: pfEnabled ? 'enabled' : 'disabled or unavailable',
     },
@@ -236,6 +290,7 @@ function formatPrometheusMetrics(): string {
  * @param templateDataset - The template dataset
  * @param snapshotName - The snapshot name
  * @param poolName - The ZFS pool name
+ * @param jailsPath - Path to jails directory (for integrity manifest)
  * @returns HTTP server instance
  */
 export function startMetricsServer(
@@ -243,6 +298,7 @@ export function startMetricsServer(
   templateDataset: string,
   snapshotName: string,
   poolName: string,
+  jailsPath?: string,
 ): http.Server | null {
   if (!config.healthEnabled && !config.metricsEnabled) {
     logger.info('Health and metrics server disabled');
@@ -259,7 +315,7 @@ export function startMetricsServer(
 
     // Route handling
     if (req.url === '/health' && config.healthEnabled) {
-      const health = getHealthStatus(templateDataset, snapshotName, poolName);
+      const health = getHealthStatus(templateDataset, snapshotName, poolName, jailsPath || '');
       const statusCode = health.healthy ? 200 : 503;
 
       res.writeHead(statusCode, { 'Content-Type': 'application/json' });
