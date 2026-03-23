@@ -341,6 +341,12 @@ setup_zfs_datasets() {
         fi
     done
 
+    # Set ZFS properties on jails parent dataset
+    log_info "Setting ZFS properties on jails dataset..."
+    zfs set compression=lz4 "$PARENT_DATASET/jails"
+    zfs set atime=off "$PARENT_DATASET/jails"
+    log_success "ZFS properties set (compression=lz4, atime=off)"
+
     # Create template dataset under jails
     TEMPLATE_DATASET="$PARENT_DATASET/jails/template"
     if zfs list "$TEMPLATE_DATASET" >/dev/null 2>&1; then

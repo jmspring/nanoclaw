@@ -1263,6 +1263,11 @@ export async function createJail(
     log.debug({ snapshot, dataset }, 'Cloning template');
     await sudoExec(['zfs', 'clone', snapshot, dataset]);
 
+    // Set per-jail ZFS properties
+    const jailQuota = process.env.NANOCLAW_JAIL_QUOTA || '1G';
+    await sudoExec(['zfs', 'set', `quota=${jailQuota}`, dataset]);
+    await sudoExec(['zfs', 'set', 'setuid=off', dataset]);
+
     // Create mount points inside jail
     await createMountPoints(mounts, jailPath);
 
