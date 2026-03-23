@@ -1307,10 +1307,8 @@ export async function createJail(
       }
     }
 
-    // Allow certain sysctls for compatibility
+    // Jail security settings
     jailParams.push(
-      'allow.raw_sockets', // Needed for DNS resolution
-      'allow.sysvipc',
       'enforce_statfs=1',
       'mount.devfs',
       'devfs_ruleset=10', // Apply restrictive devfs ruleset (see etc/devfs.rules)
