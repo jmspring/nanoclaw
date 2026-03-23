@@ -1416,7 +1416,8 @@ export async function execInJail(
     // Wrap command in shell to set umask 002 for group-writable files.
     // This ensures files created by node inside the jail are writable by
     // the host user (jims) via the shared wheel group.
-    args.push('sh', '-c', 'umask 002; exec "$@"', '--');
+    // Note: use '_' as $0 placeholder, not '--' which jexec consumes as end-of-options
+    args.push('sh', '-c', 'umask 002; exec "$@"', '_');
 
     // Environment variables must be passed via env command inside the jail
     // FreeBSD jexec does not support -e flags
@@ -1569,7 +1570,8 @@ export function spawnInJail(
     args.push(...command.slice(3));
   } else {
     // For non-shell commands, wrap in sh -c to set umask
-    args.push('sh', '-c', `umask 002; exec "$@"`, '--', ...command);
+    // Note: use '_' as $0 placeholder, not '--' which jexec consumes as end-of-options
+    args.push('sh', '-c', `umask 002; exec "$@"`, '_', ...command);
   }
 
   logger.debug(
