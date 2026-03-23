@@ -77,6 +77,11 @@ let messageLoopRunning = false;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
+/** Consecutive agent failure counter for admin alerting */
+let consecutiveAgentFailures = 0;
+const AGENT_FAILURE_THRESHOLD = 3;
+let adminAlertFn: ((msg: string) => Promise<void>) | null = null;
+
 /** Path to persistent session state file */
 const SESSION_STATE_FILE = path.join(DATA_DIR, 'session-state.json');
 
@@ -457,12 +462,25 @@ async function runAgent(
         { group: group.name, error: output.error },
         'Container agent error',
       );
+      consecutiveAgentFailures++;
+      if (consecutiveAgentFailures === AGENT_FAILURE_THRESHOLD && adminAlertFn) {
+        adminAlertFn(
+          `${AGENT_FAILURE_THRESHOLD} consecutive agent failures detected. Check logs for details.`,
+        );
+      }
       return 'error';
     }
 
+    consecutiveAgentFailures = 0;
     return 'success';
   } catch (err) {
     tracedLogger.error({ group: group.name, err }, 'Agent error');
+    consecutiveAgentFailures++;
+    if (consecutiveAgentFailures === AGENT_FAILURE_THRESHOLD && adminAlertFn) {
+      adminAlertFn(
+        `${AGENT_FAILURE_THRESHOLD} consecutive agent failures detected. Check logs for details.`,
+      );
+    }
     return 'error';
   }
 }
@@ -778,6 +796,77 @@ async function main(): Promise<void> {
     process.exit(1);
   });
 
+  // Admin alerting: send critical alerts to the first main group
+  const sendAdminAlert = async (message: string) => {
+    const mainJid = Object.entries(registeredGroups).find(
+      ([, g]) => g.isMain,
+    )?.[0];
+    if (!mainJid) return;
+    const channel = findChannel(channels, mainJid);
+    if (!channel) return;
+    try {
+      await channel.sendMessage(mainJid, `[NanoClaw Alert] ${message}`);
+    } catch (err) {
+      logger.warn({ err }, 'Failed to send admin alert');
+    }
+  };
+
+  // Wire up admin alerting for agent failure tracking
+  adminAlertFn = sendAdminAlert;
+
+  // Periodic health check for admin alerting (every 5 minutes)
+  let alertCheckInterval: ReturnType<typeof setInterval> | null = null;
+  if (getRuntime() === 'jail') {
+    alertCheckInterval = setInterval(async () => {
+      try {
+        const jailRuntime = await import('./jail-runtime.js');
+        const poolName = jailRuntime.JAIL_CONFIG.jailsDataset.split('/')[0];
+
+        // Check ZFS pool space
+        try {
+          const availOutput = execFileSync(
+            'zfs',
+            ['get', '-Hp', '-o', 'value', 'available', poolName],
+            { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
+          );
+          const usedOutput = execFileSync(
+            'zfs',
+            ['get', '-Hp', '-o', 'value', 'used', poolName],
+            { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
+          );
+          const avail = parseInt(availOutput.trim(), 10);
+          const used = parseInt(usedOutput.trim(), 10);
+          if (avail > 0 && used > 0) {
+            const pctAvail = (avail / (avail + used)) * 100;
+            if (pctAvail < 10) {
+              sendAdminAlert(
+                `ZFS pool "${poolName}" is low on space: ${pctAvail.toFixed(1)}% free (${Math.round(avail / 1024 / 1024)}MB available).`,
+              );
+            }
+          }
+        } catch {
+          // ZFS check failed — skip
+        }
+
+        // Check template snapshot exists
+        const snapshot = `${jailRuntime.JAIL_CONFIG.templateDataset}@${jailRuntime.JAIL_CONFIG.templateSnapshot}`;
+        try {
+          execFileSync('zfs', ['list', '-t', 'snapshot', '-H', snapshot], {
+            stdio: 'pipe',
+            timeout: 5000,
+          });
+        } catch {
+          sendAdminAlert(
+            `Template snapshot missing: ${snapshot}. New jails cannot be created.`,
+          );
+        }
+      } catch (err) {
+        logger.debug({ err }, 'Admin alert health check failed');
+      }
+    }, 5 * 60 * 1000);
+
+  }
+
   // Periodic session state save (runs every 5 minutes for crash recovery)
   const sessionSaveInterval = setInterval(() => {
     saveSessionState();
@@ -795,6 +884,7 @@ async function main(): Promise<void> {
   // Clean up on shutdown
   const originalShutdown = shutdown;
   const shutdownWithCleanup = async (signal: string) => {
+    if (alertCheckInterval) clearInterval(alertCheckInterval);
     clearInterval(sessionSaveInterval);
     clearInterval(logCleanupInterval);
     await originalShutdown(signal);
