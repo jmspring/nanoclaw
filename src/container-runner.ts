@@ -31,7 +31,7 @@ import {
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
-import type { JailMountPaths } from './jail-runtime.js';
+import type { JailMountPaths } from './jail/types.js';
 import { writeRotatingLog } from './log-rotation.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -65,7 +65,7 @@ interface VolumeMount {
 /**
  * Build semantic mount paths for FreeBSD jails.
  * Unlike Docker mounts, this doesn't include /dev/null tricks or file masking.
- * The jail-runtime.js defines where these paths are mounted inside the jail.
+ * The jail module defines where these paths are mounted inside the jail.
  */
 function buildJailMountPaths(
   group: RegisteredGroup,
@@ -93,7 +93,7 @@ function buildJailMountPaths(
     const uid = process.getuid?.() ?? 0;
     fs.chownSync(groupSessionsDir, uid, 0); // gid 0 = wheel
   } catch {
-    // Non-fatal: permissions will be set by ensureHostDirectories in jail-runtime
+    // Non-fatal: permissions will be set by ensureHostDirectories in jail module
   }
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   if (!fs.existsSync(settingsFile)) {
@@ -415,7 +415,7 @@ async function runJailAgent(
   const startTime = Date.now();
   const log = tracedLogger || logger;
 
-  const jailRuntime = await import('./jail-runtime.js');
+  const jailRuntime = await import('./jail/index.js');
 
   // Build semantic mount paths (not Docker VolumeMount[])
   const mountPaths = buildJailMountPaths(group, input.isMain);
@@ -449,7 +449,7 @@ async function runJailAgent(
     'Creating jail with semantic paths',
   );
 
-  // Create jail with semantic paths - jail-runtime handles the layout
+  // Create jail with semantic paths - jail module handles the layout
   let jailName: string;
   let jailMounts: Array<{
     hostPath: string;

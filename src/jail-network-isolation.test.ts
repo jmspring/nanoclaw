@@ -29,7 +29,7 @@ import {
   execInJail,
   JAIL_CONFIG,
   type JailCreationResult,
-} from './jail-runtime.js';
+} from './jail/index.js';
 import fs from 'fs';
 import path from 'path';
 

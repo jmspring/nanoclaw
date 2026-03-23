@@ -127,7 +127,7 @@ export type SudoExecutorSync = (
 ) => string;
 
 /** Root path for NanoClaw data — override via NANOCLAW_ROOT env var */
-const NANOCLAW_ROOT = process.env.NANOCLAW_ROOT || '/home/jims/code/nanoclaw';
+const NANOCLAW_ROOT = process.env.NANOCLAW_ROOT || process.cwd();
 
 /** Jail configuration — paths derived from NANOCLAW_ROOT with per-path overrides */
 export const JAIL_CONFIG: JailConfig = {
