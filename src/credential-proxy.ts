@@ -23,6 +23,29 @@ export interface ProxyConfig {
   authMode: AuthMode;
 }
 
+/** Normalize IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1 -> 127.0.0.1) */
+function normalizeIP(addr: string | undefined): string {
+  if (!addr) return '';
+  return addr.replace(/^::ffff:/, '');
+}
+
+/** Check whether a remote address is allowed to use the proxy. */
+export function isAllowedSource(remoteAddr: string | undefined): boolean {
+  const addr = normalizeIP(remoteAddr);
+  if (!addr) return false;
+
+  const mode =
+    (process.env.NANOCLAW_JAIL_NETWORK_MODE as 'inherit' | 'restricted') ||
+    'restricted';
+
+  if (mode === 'restricted') {
+    // Jails use 10.99.0.0/24 via vnet epair
+    return addr.startsWith('10.99.0.');
+  }
+  // Inherit mode: only localhost
+  return addr === '127.0.0.1' || addr === '::1';
+}
+
 export function startCredentialProxy(
   port: number,
   host = '127.0.0.1',
@@ -46,6 +69,14 @@ export function startCredentialProxy(
 
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
+      const remoteAddr = req.socket.remoteAddress;
+      if (!isAllowedSource(remoteAddr)) {
+        logger.warn({ remoteAddr, url: req.url }, 'Credential proxy: rejected unauthorized source');
+        res.writeHead(403);
+        res.end('Forbidden');
+        return;
+      }
+
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {

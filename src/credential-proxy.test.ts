@@ -11,7 +11,7 @@ vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 
-import { startCredentialProxy } from './credential-proxy.js';
+import { startCredentialProxy, isAllowedSource } from './credential-proxy.js';
 
 function makeRequest(
   port: number,
@@ -43,6 +43,56 @@ function makeRequest(
   });
 }
 
+describe('isAllowedSource', () => {
+  const originalEnv = process.env.NANOCLAW_JAIL_NETWORK_MODE;
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.NANOCLAW_JAIL_NETWORK_MODE;
+    } else {
+      process.env.NANOCLAW_JAIL_NETWORK_MODE = originalEnv;
+    }
+  });
+
+  it('restricted mode allows 10.99.0.x addresses', () => {
+    process.env.NANOCLAW_JAIL_NETWORK_MODE = 'restricted';
+    expect(isAllowedSource('10.99.0.2')).toBe(true);
+    expect(isAllowedSource('10.99.0.254')).toBe(true);
+    expect(isAllowedSource('::ffff:10.99.0.5')).toBe(true);
+  });
+
+  it('restricted mode rejects localhost and other IPs', () => {
+    process.env.NANOCLAW_JAIL_NETWORK_MODE = 'restricted';
+    expect(isAllowedSource('127.0.0.1')).toBe(false);
+    expect(isAllowedSource('::1')).toBe(false);
+    expect(isAllowedSource('192.168.1.5')).toBe(false);
+  });
+
+  it('inherit mode allows localhost', () => {
+    process.env.NANOCLAW_JAIL_NETWORK_MODE = 'inherit';
+    expect(isAllowedSource('127.0.0.1')).toBe(true);
+    expect(isAllowedSource('::1')).toBe(true);
+    expect(isAllowedSource('::ffff:127.0.0.1')).toBe(true);
+  });
+
+  it('inherit mode rejects non-localhost', () => {
+    process.env.NANOCLAW_JAIL_NETWORK_MODE = 'inherit';
+    expect(isAllowedSource('10.99.0.2')).toBe(false);
+    expect(isAllowedSource('192.168.1.5')).toBe(false);
+  });
+
+  it('rejects undefined/empty addresses', () => {
+    expect(isAllowedSource(undefined)).toBe(false);
+    expect(isAllowedSource('')).toBe(false);
+  });
+
+  it('defaults to restricted mode', () => {
+    delete process.env.NANOCLAW_JAIL_NETWORK_MODE;
+    expect(isAllowedSource('127.0.0.1')).toBe(false);
+    expect(isAllowedSource('10.99.0.2')).toBe(true);
+  });
+});
+
 describe('credential-proxy', () => {
   let proxyServer: http.Server;
   let upstreamServer: http.Server;
@@ -51,6 +101,8 @@ describe('credential-proxy', () => {
   let lastUpstreamHeaders: http.IncomingHttpHeaders;
 
   beforeEach(async () => {
+    // Tests connect from 127.0.0.1, so use inherit mode to pass source IP check
+    process.env.NANOCLAW_JAIL_NETWORK_MODE = 'inherit';
     lastUpstreamHeaders = {};
 
     upstreamServer = http.createServer((req, res) => {
@@ -68,6 +120,7 @@ describe('credential-proxy', () => {
     await new Promise<void>((r) => proxyServer?.close(() => r()));
     await new Promise<void>((r) => upstreamServer?.close(() => r()));
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
+    delete process.env.NANOCLAW_JAIL_NETWORK_MODE;
   });
 
   async function startProxy(env: Record<string, string>): Promise<number> {
@@ -188,5 +241,24 @@ describe('credential-proxy', () => {
 
     expect(res.statusCode).toBe(502);
     expect(res.body).toBe('Bad Gateway');
+  });
+
+  it('rejects requests from unauthorized source IP', async () => {
+    // Switch to restricted mode — localhost connections should be rejected
+    process.env.NANOCLAW_JAIL_NETWORK_MODE = 'restricted';
+    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/messages',
+        headers: { 'content-type': 'application/json' },
+      },
+      '{}',
+    );
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toBe('Forbidden');
   });
 });
