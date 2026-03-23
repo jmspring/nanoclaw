@@ -163,12 +163,12 @@ export function _initTestDatabase(): void {
  * Create a backup of the SQLite database.
  * Keeps the 7 most recent backups, pruning older ones.
  */
-export function backupDatabase(): void {
+export async function backupDatabase(): Promise<void> {
   const backupDir = path.join(path.dirname(DB_PATH), 'backups');
   fs.mkdirSync(backupDir, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backupPath = path.join(backupDir, `messages-${timestamp}.db`);
-  db.backup(backupPath);
+  await db.backup(backupPath);
   // Prune: keep only 7 most recent
   const backups = fs
     .readdirSync(backupDir)

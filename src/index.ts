@@ -800,11 +800,9 @@ async function main(): Promise<void> {
 
   // Periodic database backup (runs daily)
   const dbBackupInterval = setInterval(() => {
-    try {
-      backupDatabase();
-    } catch (err) {
+    backupDatabase().catch((err) => {
       logger.warn({ err }, 'Database backup failed');
-    }
+    });
   }, 24 * 60 * 60 * 1000);
 
   // Clean up on shutdown
