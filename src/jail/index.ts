@@ -81,3 +81,6 @@ export {
   cleanupAllJails,
   ensureJailRuntimeRunning,
 } from './cleanup.js';
+
+// Runner
+export { runJailAgent } from './runner.js';
