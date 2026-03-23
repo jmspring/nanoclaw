@@ -401,16 +401,18 @@ async function runQuery(
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*'
-      ],
+      allowedTools: process.env.ALLOWED_TOOLS
+        ? process.env.ALLOWED_TOOLS.split(',')
+        : [
+            'Bash',
+            'Read', 'Write', 'Edit', 'Glob', 'Grep',
+            'WebSearch', 'WebFetch',
+            'Task', 'TaskOutput', 'TaskStop',
+            'TeamCreate', 'TeamDelete', 'SendMessage',
+            'TodoWrite', 'ToolSearch', 'Skill',
+            'NotebookEdit',
+            'mcp__nanoclaw__*',
+          ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,

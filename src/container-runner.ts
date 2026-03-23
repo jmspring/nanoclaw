@@ -322,9 +322,31 @@ function buildVolumeMounts(
   return mounts;
 }
 
+/** Default allowed tools for all groups. */
+const ALL_TOOLS = [
+  'Bash',
+  'Read', 'Write', 'Edit', 'Glob', 'Grep',
+  'WebSearch', 'WebFetch',
+  'Task', 'TaskOutput', 'TaskStop',
+  'TeamCreate', 'TeamDelete', 'SendMessage',
+  'TodoWrite', 'ToolSearch', 'Skill',
+  'NotebookEdit',
+  'mcp__nanoclaw__*',
+];
+
+/** Restricted tools for non-main groups (no shell, no team management). */
+const RESTRICTED_TOOLS = ALL_TOOLS.filter(
+  (t) => !['Bash', 'TeamCreate', 'TeamDelete'].includes(t),
+);
+
+export function getAllowedTools(isMain: boolean): string[] {
+  return isMain ? ALL_TOOLS : RESTRICTED_TOOLS;
+}
+
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  isMain: boolean,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -347,6 +369,9 @@ function buildContainerArgs(
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
+
+  // Per-group tool restrictions
+  args.push('-e', `ALLOWED_TOOLS=${getAllowedTools(isMain).join(',')}`);
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
@@ -404,6 +429,9 @@ async function runJailAgent(
     PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
     ANTHROPIC_BASE_URL: `http://${jailRuntime.JAIL_CONFIG.jailHostIP}:${CREDENTIAL_PROXY_PORT}`,
   };
+
+  // Per-group tool restrictions
+  env.ALLOWED_TOOLS = getAllowedTools(input.isMain).join(',');
 
   // Mirror the host's auth method with a placeholder value.
   // API key mode: SDK sends x-api-key, proxy replaces with real key.
@@ -856,7 +884,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(mounts, containerName, input.isMain);
 
   log.debug(
     {
