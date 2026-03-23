@@ -124,6 +124,8 @@ function saveSessionState(): void {
     };
     const tempFile = `${SESSION_STATE_FILE}.tmp`;
     fs.writeFileSync(tempFile, JSON.stringify(state, null, 2));
+    // Restrict permissions before rename so the final file is not world-readable
+    fs.chmodSync(tempFile, 0o600);
     fs.renameSync(tempFile, SESSION_STATE_FILE);
     logger.debug({ sessionCount: Object.keys(sessions).length }, 'Session state saved');
   } catch (err) {

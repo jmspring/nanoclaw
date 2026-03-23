@@ -325,6 +325,8 @@ function logCleanupAudit(
 
   try {
     fs.appendFileSync(CLEANUP_AUDIT_LOG, logLine);
+    // Ensure audit log is not world-readable (owner rw, group r)
+    fs.chmodSync(CLEANUP_AUDIT_LOG, 0o640);
   } catch (err) {
     logger.error(
       { err, logFile: CLEANUP_AUDIT_LOG },
