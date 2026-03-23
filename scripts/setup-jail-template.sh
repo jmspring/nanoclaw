@@ -356,6 +356,25 @@ if sudo zfs list -t snapshot "$BACKUP_SNAPSHOT" >/dev/null 2>&1; then
     sudo zfs destroy "$BACKUP_SNAPSHOT"
 fi
 
+# Generate SHA-256 manifest for template integrity verification
+MANIFEST_PATH="${JAILS_PATH}/${TEMPLATE_NAME}.sha256"
+log "  Generating integrity manifest: $MANIFEST_PATH"
+if sudo zfs send "$FULL_SNAPSHOT" | sha256 > "${MANIFEST_PATH}.tmp" 2>/dev/null; then
+    mv "${MANIFEST_PATH}.tmp" "$MANIFEST_PATH"
+    log "  Manifest SHA-256: $(cat "$MANIFEST_PATH")"
+else
+    # sha256 may not be available, try sha256sum
+    if sudo zfs send "$FULL_SNAPSHOT" | sha256sum > "${MANIFEST_PATH}.tmp" 2>/dev/null; then
+        # sha256sum outputs "hash  -", extract just the hash
+        awk '{print $1}' "${MANIFEST_PATH}.tmp" > "$MANIFEST_PATH"
+        rm -f "${MANIFEST_PATH}.tmp"
+        log "  Manifest SHA-256: $(cat "$MANIFEST_PATH")"
+    else
+        warn "  Could not generate SHA-256 manifest (sha256/sha256sum not available)"
+        rm -f "${MANIFEST_PATH}.tmp"
+    fi
+fi
+
 log ""
 log "=========================================="
 log "Template setup complete!"

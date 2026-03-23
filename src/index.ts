@@ -631,6 +631,7 @@ async function main(): Promise<void> {
       jailRuntime.JAIL_CONFIG.templateDataset,
       jailRuntime.JAIL_CONFIG.templateSnapshot,
       jailRuntime.JAIL_CONFIG.jailsDataset.split('/')[0], // Extract pool name (e.g., zroot)
+      jailRuntime.JAIL_CONFIG.jailsPath,
     );
 
     // Update metrics every 30 seconds
