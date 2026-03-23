@@ -118,22 +118,23 @@ The NanoClaw jail runtime requires elevated privileges to manage jails, ZFS data
 - **Risk Level**: MEDIUM - Only affects jail processes via jexec
 - **Lines**: 1125, 1282, 1321 (all via jexec)
 
-## Sample Sudoers Configuration
+## Recommended Sudoers Configuration
 
-Create a file `/usr/local/etc/sudoers.d/nanoclaw` with the following content:
+Create a file `/usr/local/etc/sudoers.d/nanoclaw` with the following content. This configuration restricts commands to NanoClaw-specific jails and datasets:
 
 ```sudoers
-# NanoClaw jail runtime sudo privileges
+# NanoClaw jail runtime sudo privileges (production)
 # Replace 'nanoclaw_user' with the actual username running NanoClaw
 
-# Jail management
-nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jail
-nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jexec
-nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jls
+# Jail operations - restrict to nanoclaw_* jails only
+nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jail -c name=nanoclaw_*
+nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jail -r nanoclaw_*
+nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jexec *
+nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jls *
 
-# ZFS operations (restricted to NanoClaw jail datasets)
-nanoclaw_user ALL=(root) NOPASSWD: /sbin/zfs clone *
-nanoclaw_user ALL=(root) NOPASSWD: /sbin/zfs destroy *
+# ZFS - restrict to nanoclaw jail datasets
+nanoclaw_user ALL=(root) NOPASSWD: /sbin/zfs clone zroot/nanoclaw/jails/template@* zroot/nanoclaw/jails/*
+nanoclaw_user ALL=(root) NOPASSWD: /sbin/zfs destroy * zroot/nanoclaw/jails/*
 nanoclaw_user ALL=(root) NOPASSWD: /sbin/zfs list *
 
 # Filesystem operations
@@ -142,6 +143,8 @@ nanoclaw_user ALL=(root) NOPASSWD: /sbin/umount
 nanoclaw_user ALL=(root) NOPASSWD: /bin/mkdir
 nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/chown
 nanoclaw_user ALL=(root) NOPASSWD: /bin/chmod
+nanoclaw_user ALL=(root) NOPASSWD: /bin/cp
+nanoclaw_user ALL=(root) NOPASSWD: /usr/bin/tee
 
 # Network management (vnet/epair mode only)
 nanoclaw_user ALL=(root) NOPASSWD: /sbin/ifconfig
@@ -152,36 +155,33 @@ nanoclaw_user ALL=(root) NOPASSWD: /usr/bin/rctl
 
 # Firewall monitoring (read-only)
 nanoclaw_user ALL=(root) NOPASSWD: /sbin/pfctl -si
-
-# Shell for scripted operations
-nanoclaw_user ALL=(root) NOPASSWD: /bin/sh
 ```
 
-### Tighter Restrictions (Advanced)
+**Note**: Adjust `zroot/nanoclaw/jails` to match your `JAIL_CONFIG` dataset paths in `src/jail-runtime.ts`. The `jexec` entry uses `*` because the runtime passes various flags (`-U`, `-d`) before the jail name.
 
-For production environments, you can further restrict commands to specific patterns:
+### Development Only (INSECURE — not for production)
+
+For development environments where convenience is preferred over security, you can use broader permissions. **Do NOT use this in production** — it grants unrestricted access to jail, ZFS, shell, and other commands:
 
 ```sudoers
-# Jail operations - restrict to nanoclaw_* jails only
-nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jail -c name=nanoclaw_*
-nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jail -r nanoclaw_*
-nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jexec nanoclaw_*
-nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jls *
-
-# ZFS - restrict to specific dataset paths
-nanoclaw_user ALL=(root) NOPASSWD: /sbin/zfs clone zroot/nanoclaw/jails/template@* zroot/nanoclaw/jails/*
-nanoclaw_user ALL=(root) NOPASSWD: /sbin/zfs destroy * zroot/nanoclaw/jails/*
-
-# Filesystem - restrict to jail paths only
-nanoclaw_user ALL=(root) NOPASSWD: /sbin/mount_nullfs * /home/jims/code/nanoclaw/jails/*
-nanoclaw_user ALL=(root) NOPASSWD: /sbin/umount /home/jims/code/nanoclaw/jails/*
-nanoclaw_user ALL=(root) NOPASSWD: /bin/mkdir -p /home/jims/code/nanoclaw/jails/*
-
-# Network - restrict to epair operations only
-nanoclaw_user ALL=(root) NOPASSWD: /sbin/ifconfig epair*
+# NanoClaw DEVELOPMENT sudoers — INSECURE, not for production
+nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jail
+nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jexec
+nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/jls
+nanoclaw_user ALL=(root) NOPASSWD: /sbin/zfs
+nanoclaw_user ALL=(root) NOPASSWD: /sbin/mount_nullfs
+nanoclaw_user ALL=(root) NOPASSWD: /sbin/umount
+nanoclaw_user ALL=(root) NOPASSWD: /sbin/ifconfig
+nanoclaw_user ALL=(root) NOPASSWD: /sbin/route
+nanoclaw_user ALL=(root) NOPASSWD: /bin/mkdir
+nanoclaw_user ALL=(root) NOPASSWD: /usr/sbin/chown
+nanoclaw_user ALL=(root) NOPASSWD: /bin/chmod
+nanoclaw_user ALL=(root) NOPASSWD: /bin/cp
+nanoclaw_user ALL=(root) NOPASSWD: /usr/bin/tee
+nanoclaw_user ALL=(root) NOPASSWD: /usr/bin/rctl
+nanoclaw_user ALL=(root) NOPASSWD: /sbin/pfctl -si
+nanoclaw_user ALL=(root) NOPASSWD: /bin/sh
 ```
-
-**Note**: The advanced restrictions above require careful path configuration and may need adjustment based on your actual `JAIL_CONFIG` paths in `src/jail-runtime.ts`.
 
 ## Security Considerations
 
