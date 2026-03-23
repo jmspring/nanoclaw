@@ -205,6 +205,20 @@ setup_kernel_modules() {
         echo 'net.inet.ip.forwarding=1' >> "$SYSCTL_CONF"
         log_success "IP forwarding added to $SYSCTL_CONF"
     fi
+
+    # Verify RACCT support for rctl resource limits
+    if sysctl -n kern.racct.enable 2>/dev/null | grep -q 1; then
+        log_skip "RACCT already enabled"
+    else
+        log_info "RACCT not enabled — rctl resource limits will not work without it"
+        if grep -q 'kern.racct.enable' "$LOADER_CONF" 2>/dev/null; then
+            log_info "kern.racct.enable already in $LOADER_CONF (reboot required to activate)"
+        else
+            log_info "Adding kern.racct.enable=1 to $LOADER_CONF..."
+            echo 'kern.racct.enable=1' >> "$LOADER_CONF"
+            log_success "kern.racct.enable=1 added to $LOADER_CONF (reboot required)"
+        fi
+    fi
 }
 
 # =============================================================================
@@ -340,6 +354,12 @@ setup_zfs_datasets() {
             log_success "Dataset $CHILD_DATASET created"
         fi
     done
+
+    # Set ZFS properties on jails parent dataset
+    log_info "Setting ZFS properties on jails dataset..."
+    zfs set compression=lz4 "$PARENT_DATASET/jails"
+    zfs set atime=off "$PARENT_DATASET/jails"
+    log_success "ZFS properties set (compression=lz4, atime=off)"
 
     # Create template dataset under jails
     TEMPLATE_DATASET="$PARENT_DATASET/jails/template"
