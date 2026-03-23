@@ -820,11 +820,13 @@ async function setupJailResolv(jailPath: string): Promise<void> {
 
   try {
     const hostResolv = fs.readFileSync('/etc/resolv.conf', 'utf-8');
-    await sudoExec([
-      'sh',
-      '-c',
-      `cat > ${resolvPath} << 'RESOLV'\n${hostResolv}\nRESOLV`,
-    ]);
+    const tmpFile = path.join('/tmp', `nanoclaw-resolv-${crypto.randomUUID()}`);
+    fs.writeFileSync(tmpFile, hostResolv);
+    try {
+      await sudoExec(['cp', tmpFile, resolvPath]);
+    } finally {
+      fs.unlinkSync(tmpFile);
+    }
     logger.debug({ jailPath, resolvPath }, 'Copied host resolv.conf to jail');
   } catch (error) {
     logger.warn(
@@ -1265,11 +1267,13 @@ export async function createJail(
 
     // Create .claude directory and .claude.json for Claude Code (required before running as non-root)
     await sudoExec(['mkdir', '-p', `${jailPath}/home/node/.claude`]);
-    await sudoExec([
-      'sh',
-      '-c',
-      `echo '{}' > ${jailPath}/home/node/.claude.json`,
-    ]);
+    const tmpClaudeJson = path.join('/tmp', `nanoclaw-claude-json-${crypto.randomUUID()}`);
+    fs.writeFileSync(tmpClaudeJson, '{}');
+    try {
+      await sudoExec(['cp', tmpClaudeJson, `${jailPath}/home/node/.claude.json`]);
+    } finally {
+      fs.unlinkSync(tmpClaudeJson);
+    }
     await sudoExec(['chown', '-R', '1000:1000', `${jailPath}/home/node`]);
 
     // Ensure /tmp is writable by node user (entrypoint compiles TypeScript to /tmp/dist)
