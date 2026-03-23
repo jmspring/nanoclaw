@@ -164,8 +164,10 @@ if (JAIL_CONFIG.networkMode === 'inherit') {
   );
 }
 
-/** Maximum number of epairs allowed (configurable via env var) */
-const MAX_EPAIRS = parseInt(process.env.NANOCLAW_MAX_EPAIRS || '200', 10);
+/** Maximum number of epairs allowed (configurable via env var, clamped 1-255) */
+const MAX_EPAIRS = Math.min(255, Math.max(1,
+  parseInt(process.env.NANOCLAW_MAX_EPAIRS || '200', 10) || 200,
+));
 
 /** Epair warning threshold (percentage) */
 const EPAIR_WARNING_THRESHOLD = 0.8;
@@ -173,11 +175,10 @@ const EPAIR_WARNING_THRESHOLD = 0.8;
 /** Track assigned epair numbers for cleanup */
 const assignedEpairs = new Map<string, number>(); // groupId -> epair number (e.g., 0 for epair0a/epair0b)
 
-/** Maximum concurrent jails (configurable via env var) */
-const MAX_CONCURRENT_JAILS = parseInt(
-  process.env.NANOCLAW_MAX_JAILS || '50',
-  10,
-);
+/** Maximum concurrent jails (configurable via env var, clamped 1-100) */
+const MAX_CONCURRENT_JAILS = Math.min(100, Math.max(1,
+  parseInt(process.env.NANOCLAW_MAX_JAILS || '50', 10) || 50,
+));
 
 /** Track active jails */
 const activeJails = new Set<string>();

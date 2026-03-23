@@ -8,6 +8,12 @@ import { readEnvFile } from './env.js';
 // by the credential proxy (credential-proxy.ts), never exposed to containers.
 const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER']);
 
+/** Clamp a parsed integer to [min, max], falling back to defaultVal on NaN */
+function clampInt(raw: string | undefined, defaultVal: number, min: number, max: number): number {
+  const parsed = parseInt(raw || String(defaultVal), 10);
+  return Math.min(max, Math.max(min, isNaN(parsed) ? defaultVal : parsed));
+}
+
 export const ASSISTANT_NAME =
   process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
 export const ASSISTANT_HAS_OWN_NUMBER =
@@ -39,23 +45,21 @@ export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
-export const CONTAINER_TIMEOUT = parseInt(
-  process.env.CONTAINER_TIMEOUT || '1800000',
-  10,
-);
-export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
-  process.env.CONTAINER_MAX_OUTPUT_SIZE || '10485760',
-  10,
-); // 10MB default
-export const CREDENTIAL_PROXY_PORT = parseInt(
-  process.env.CREDENTIAL_PROXY_PORT || '3001',
-  10,
+export const CONTAINER_TIMEOUT = clampInt(
+  process.env.CONTAINER_TIMEOUT, 1800000, 60000, 7200000,
+); // 30min default, min 1min, max 2hr
+export const CONTAINER_MAX_OUTPUT_SIZE = clampInt(
+  process.env.CONTAINER_MAX_OUTPUT_SIZE, 10485760, 1048576, 104857600,
+); // 10MB default, min 1MB, max 100MB
+export const CREDENTIAL_PROXY_PORT = clampInt(
+  process.env.CREDENTIAL_PROXY_PORT, 3001, 1024, 65535,
 );
 export const IPC_POLL_INTERVAL = 1000;
-export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
-export const MAX_CONCURRENT_CONTAINERS = Math.max(
-  1,
-  parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
+export const IDLE_TIMEOUT = clampInt(
+  process.env.IDLE_TIMEOUT, 1800000, 60000, 7200000,
+); // 30min default, min 1min, max 2hr
+export const MAX_CONCURRENT_CONTAINERS = clampInt(
+  process.env.MAX_CONCURRENT_CONTAINERS, 5, 1, 50,
 );
 
 function escapeRegex(str: string): string {
@@ -77,39 +81,34 @@ export const HEALTH_ENABLED =
   (process.env.HEALTH_ENABLED || 'true') === 'true'; // Always on by default
 export const METRICS_ENABLED =
   (process.env.METRICS_ENABLED || 'false') === 'true'; // Opt-in
-export const METRICS_PORT = parseInt(process.env.METRICS_PORT || '9090', 10);
+export const METRICS_PORT = clampInt(
+  process.env.METRICS_PORT, 9090, 1024, 65535,
+);
 
 // Log rotation configuration for jail/container logs
 export const LOG_ROTATION_SIZE = process.env.LOG_ROTATION_SIZE || '10M'; // Rotate when file reaches this size
-export const LOG_ROTATION_MAX_FILES = parseInt(
-  process.env.LOG_ROTATION_MAX_FILES || '5',
-  10,
-); // Keep this many rotated files
+export const LOG_ROTATION_MAX_FILES = clampInt(
+  process.env.LOG_ROTATION_MAX_FILES, 5, 1, 100,
+);
 export const LOG_ROTATION_COMPRESS =
   (process.env.LOG_ROTATION_COMPRESS || 'true') === 'true'; // Compress rotated files
-export const LOG_RETENTION_DAYS = parseInt(
-  process.env.LOG_RETENTION_DAYS || '30',
-  10,
-); // Delete logs older than this many days
+export const LOG_RETENTION_DAYS = clampInt(
+  process.env.LOG_RETENTION_DAYS, 30, 1, 365,
+);
 
 // Jail runtime timeout configuration (in milliseconds)
-export const JAIL_EXEC_TIMEOUT = parseInt(
-  process.env.JAIL_EXEC_TIMEOUT || '30000',
-  10,
-); // Default timeout for sudo exec operations (30s)
-export const JAIL_CREATE_TIMEOUT = parseInt(
-  process.env.JAIL_CREATE_TIMEOUT || '30000',
-  10,
-); // Timeout for ZFS operations during jail creation (30s)
-export const JAIL_STOP_TIMEOUT = parseInt(
-  process.env.JAIL_STOP_TIMEOUT || '15000',
-  10,
-); // Timeout for graceful jail stop (15s)
-export const JAIL_FORCE_STOP_TIMEOUT = parseInt(
-  process.env.JAIL_FORCE_STOP_TIMEOUT || '10000',
-  10,
-); // Timeout for force jail stop (10s)
-export const JAIL_QUICK_OP_TIMEOUT = parseInt(
-  process.env.JAIL_QUICK_OP_TIMEOUT || '5000',
-  10,
-); // Timeout for quick operations like unmount, destroy epair (5s)
+export const JAIL_EXEC_TIMEOUT = clampInt(
+  process.env.JAIL_EXEC_TIMEOUT, 30000, 5000, 300000,
+); // Default 30s, min 5s, max 5min
+export const JAIL_CREATE_TIMEOUT = clampInt(
+  process.env.JAIL_CREATE_TIMEOUT, 30000, 5000, 300000,
+); // Default 30s, min 5s, max 5min
+export const JAIL_STOP_TIMEOUT = clampInt(
+  process.env.JAIL_STOP_TIMEOUT, 15000, 5000, 120000,
+); // Default 15s, min 5s, max 2min
+export const JAIL_FORCE_STOP_TIMEOUT = clampInt(
+  process.env.JAIL_FORCE_STOP_TIMEOUT, 10000, 5000, 60000,
+); // Default 10s, min 5s, max 1min
+export const JAIL_QUICK_OP_TIMEOUT = clampInt(
+  process.env.JAIL_QUICK_OP_TIMEOUT, 5000, 1000, 30000,
+); // Default 5s, min 1s, max 30s
