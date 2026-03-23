@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import { logger } from './logger.js';
 import pino from 'pino';
 import {
+  DATA_DIR,
   JAIL_EXEC_TIMEOUT,
   JAIL_CREATE_TIMEOUT,
   JAIL_STOP_TIMEOUT,
@@ -190,7 +191,7 @@ export function getJailToken(groupId: string): string | undefined {
 }
 
 /** Path to persistent epair state file */
-const EPAIR_STATE_FILE = '/var/run/nanoclaw/epairs.json';
+const EPAIR_STATE_FILE = path.join(DATA_DIR, 'epairs.json');
 
 /** Cleanup audit logging */
 const CLEANUP_AUDIT_LOG = path.join(JAIL_CONFIG.jailsPath, 'cleanup-audit.log');
