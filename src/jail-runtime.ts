@@ -458,6 +458,11 @@ function getFstabPath(jailName: string): string {
   return path.join(JAIL_CONFIG.jailsPath, `${jailName}.fstab`);
 }
 
+/** Get the jail.conf path for a jail */
+function getConfPath(jailName: string): string {
+  return path.join(JAIL_CONFIG.jailsPath, `${jailName}.conf`);
+}
+
 /**
  * Apply rctl resource limits to a jail.
  * @param jailName - The jail name
@@ -1307,37 +1312,32 @@ export async function createJail(
       await setupJailResolv(jailPath);
     }
 
-    // Create the jail
-    const jailParams = [
-      'jail',
-      '-c',
-      `name=${jailName}`,
-      `path=${jailPath}`,
-      `host.hostname=${jailName}`,
-      'persist',
-    ];
-
-    // Network configuration
+    // Build network configuration for jail.conf
+    let networkConfig: string;
     if (JAIL_CONFIG.networkMode === 'inherit') {
-      jailParams.push('ip4=inherit', 'ip6=inherit');
-    } else if (JAIL_CONFIG.networkMode === 'restricted') {
-      // Use vnet with epair interface
-      jailParams.push('vnet');
-      if (epairInfo) {
-        jailParams.push(`vnet.interface=${epairInfo.jailIface}`);
-      }
+      networkConfig = '  ip4 = inherit;\n  ip6 = inherit;';
+    } else if (JAIL_CONFIG.networkMode === 'restricted' && epairInfo) {
+      networkConfig = `  vnet;\n  vnet.interface = "${epairInfo.jailIface}";`;
+    } else {
+      networkConfig = '  vnet;';
     }
 
-    // Jail security settings
-    jailParams.push(
-      'enforce_statfs=2',
-      'mount.devfs',
-      'devfs_ruleset=10', // Apply restrictive devfs ruleset (see etc/devfs.rules)
-      'securelevel=3',
-    );
-
-    log.debug({ jailName, params: jailParams.slice(2) }, 'Starting jail');
-    await sudoExec(jailParams);
+    // Write jail.conf and create jail via jail -f
+    const confPath = getConfPath(jailName);
+    const confContent = `${jailName} {
+  path = "${jailPath}";
+  host.hostname = "${jailName}";
+  persist;
+  enforce_statfs = 2;
+  mount.devfs;
+  devfs_ruleset = 10;
+  securelevel = 3;
+${networkConfig}
+}
+`;
+    fs.writeFileSync(confPath, confContent);
+    log.debug({ jailName, confPath }, 'Wrote jail.conf');
+    await sudoExec(['jail', '-f', confPath, '-c', jailName]);
 
     // Apply resource limits to prevent runaway processes
     await applyRctlLimits(jailName);
@@ -1782,6 +1782,7 @@ export async function cleanupJail(
   const dataset = getJailDataset(jailName);
   const jailPath = getJailPath(jailName);
   const fstabPath = getFstabPath(jailName);
+  const confPath = getConfPath(jailName);
 
   logger.info({ jailName, groupId }, 'Cleaning up jail');
   logCleanupAudit('CLEANUP_START', jailName, 'INFO');
@@ -1928,6 +1929,22 @@ export async function cleanupJail(
           'Could not remove fstab',
         );
         logCleanupAudit('REMOVE_FSTAB', jailName, 'FAILED', error);
+        errors.push(error as Error);
+      }
+    }
+
+    // Remove jail.conf file
+    if (fs.existsSync(confPath)) {
+      try {
+        fs.unlinkSync(confPath);
+        logger.debug({ confPath, jailName }, 'Removed jail.conf');
+        logCleanupAudit('REMOVE_CONF', jailName, 'SUCCESS');
+      } catch (error) {
+        logger.warn(
+          { confPath, jailName, groupId, err: error },
+          'Could not remove jail.conf',
+        );
+        logCleanupAudit('REMOVE_CONF', jailName, 'FAILED', error);
         errors.push(error as Error);
       }
     }
