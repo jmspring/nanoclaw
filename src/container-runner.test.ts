@@ -188,6 +188,40 @@ describe('CLAUDE.md integrity checking', () => {
   });
 });
 
+describe('agent-runner mount is read-only', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('mounts agent-runner source as read-only in Docker', async () => {
+    const { spawn } = await import('child_process');
+    const { readonlyMountArgs } = await import('./container-runtime.js');
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+    );
+
+    fakeProc.stdout.push(`${OUTPUT_START_MARKER}\n${JSON.stringify({ status: 'success', result: 'ok' })}\n${OUTPUT_END_MARKER}\n`);
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    // Verify readonlyMountArgs was called for /app/src
+    expect(readonlyMountArgs).toHaveBeenCalledWith(
+      expect.stringContaining('agent-runner-src'),
+      '/app/src',
+    );
+  });
+});
+
 describe('container-runner timeout behavior', () => {
   beforeEach(() => {
     vi.useFakeTimers();
