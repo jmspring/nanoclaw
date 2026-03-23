@@ -387,4 +387,57 @@ describe('credential-proxy', () => {
       revokeJailToken(token);
     }
   });
+
+  it('rejects requests to invalid paths with 404', async () => {
+    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'GET',
+        path: '/etc/passwd',
+        headers: { 'content-type': 'application/json' },
+      },
+    );
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body).toBe('Not Found');
+  });
+
+  it('allows /v1/ paths', async () => {
+    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/messages',
+        headers: { 'content-type': 'application/json' },
+      },
+      '{}',
+    );
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('allows /api/oauth/ paths', async () => {
+    proxyPort = await startProxy({
+      CLAUDE_CODE_OAUTH_TOKEN: 'real-oauth-token',
+    });
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/api/oauth/claude_cli/create_api_key',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer placeholder',
+        },
+      },
+      '{}',
+    );
+
+    expect(res.statusCode).toBe(200);
+  });
 });

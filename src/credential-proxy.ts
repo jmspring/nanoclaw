@@ -117,6 +117,15 @@ export function startCredentialProxy(
         }
       }
 
+      // Request path validation — only proxy known API paths
+      const reqPath = req.url || '';
+      if (!reqPath.startsWith('/v1/') && !reqPath.startsWith('/api/oauth/')) {
+        logger.warn({ remoteAddr, url: req.url }, 'Credential proxy: rejected invalid path');
+        res.writeHead(404);
+        res.end('Not Found');
+        return;
+      }
+
       // Per-IP rate limiting
       const normalizedAddr = normalizeIP(remoteAddr);
       if (!checkRateLimit(normalizedAddr)) {
