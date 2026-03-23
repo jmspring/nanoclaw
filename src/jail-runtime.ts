@@ -1260,11 +1260,13 @@ export async function createJail(
 
     // Create .claude directory and .claude.json for Claude Code (required before running as non-root)
     await sudoExec(['mkdir', '-p', `${jailPath}/home/node/.claude`]);
-    await sudoExec([
-      'sh',
-      '-c',
-      `echo '{}' > ${jailPath}/home/node/.claude.json`,
-    ]);
+    const tmpClaudeJson = path.join('/tmp', `nanoclaw-claude-json-${crypto.randomUUID()}`);
+    fs.writeFileSync(tmpClaudeJson, '{}');
+    try {
+      await sudoExec(['cp', tmpClaudeJson, `${jailPath}/home/node/.claude.json`]);
+    } finally {
+      fs.unlinkSync(tmpClaudeJson);
+    }
     await sudoExec(['chown', '-R', '1000:1000', `${jailPath}/home/node`]);
 
     // Ensure /tmp is writable by node user (entrypoint compiles TypeScript to /tmp/dist)
