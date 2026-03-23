@@ -72,9 +72,11 @@ export const TRIGGER_PATTERN = new RegExp(
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-// Metrics and monitoring configuration
+// Health and metrics configuration
+export const HEALTH_ENABLED =
+  (process.env.HEALTH_ENABLED || 'true') === 'true'; // Always on by default
 export const METRICS_ENABLED =
-  (process.env.METRICS_ENABLED || 'false') === 'true';
+  (process.env.METRICS_ENABLED || 'false') === 'true'; // Opt-in
 export const METRICS_PORT = parseInt(process.env.METRICS_PORT || '9090', 10);
 
 // Log rotation configuration for jail/container logs
