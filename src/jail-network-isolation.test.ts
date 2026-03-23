@@ -33,14 +33,28 @@ import {
 import fs from 'fs';
 import path from 'path';
 
-// Skip tests if not in restricted network mode or not on FreeBSD
+// Skip tests if not in restricted network mode, not on FreeBSD, or pf not configured
 const isRestrictedMode = JAIL_CONFIG.networkMode === 'restricted';
 const isFreeBSD = process.platform === 'freebsd';
+let hasPfTables = false;
+if (isFreeBSD && isRestrictedMode) {
+  try {
+    const { execFileSync } = await import('child_process');
+    execFileSync('sudo', ['pfctl', '-t', 'anthropic_api', '-T', 'show'], {
+      stdio: 'pipe',
+    });
+    hasPfTables = true;
+  } catch {
+    // pf tables not configured
+  }
+}
 const skipReason = !isFreeBSD
   ? 'Skipping: not running on FreeBSD'
   : !isRestrictedMode
     ? 'Skipping: NANOCLAW_JAIL_NETWORK_MODE != restricted'
-    : null;
+    : !hasPfTables
+      ? 'Skipping: pf tables not configured'
+      : null;
 
 // Test configuration
 const TEST_TIMEOUT = 30000; // 30s for network tests
@@ -59,7 +73,7 @@ const DNS_CLOUDFLARE = '1.1.1.1';
 const BLOCKED_HOST = 'google.com';
 const BLOCKED_IP = '142.250.64.78'; // google.com IP (not in allowlist)
 
-describe.skipIf(!isFreeBSD || !isRestrictedMode)(
+describe.skipIf(!isFreeBSD || !isRestrictedMode || !hasPfTables)(
   'Jail Network Isolation (restricted mode)',
   () => {
     let jail1: JailCreationResult | null = null;
