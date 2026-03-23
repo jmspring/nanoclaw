@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { z } from 'zod';
 
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -11,6 +12,14 @@ import {
   ScheduledTask,
   TaskRunLog,
 } from './types.js';
+
+export const ContainerConfigSchema = z.object({
+  additionalMounts: z.array(z.object({
+    hostPath: z.string(),
+    containerPath: z.string(),
+    readonly: z.boolean().optional(),
+  })).optional(),
+}).passthrough();
 
 let db: Database.Database;
 
@@ -564,15 +573,25 @@ export function getRegisteredGroup(
     );
     return undefined;
   }
+  let containerConfig: RegisteredGroup['containerConfig'];
+  if (row.container_config) {
+    try {
+      containerConfig = ContainerConfigSchema.parse(JSON.parse(row.container_config));
+    } catch (err) {
+      logger.warn(
+        { jid: row.jid, err },
+        'Invalid container_config in registered group, ignoring',
+      );
+    }
+  }
+
   return {
     jid: row.jid,
     name: row.name,
     folder: row.folder,
     trigger: row.trigger_pattern,
     added_at: row.added_at,
-    containerConfig: row.container_config
-      ? JSON.parse(row.container_config)
-      : undefined,
+    containerConfig,
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
     isMain: row.is_main === 1 ? true : undefined,
@@ -618,14 +637,24 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       );
       continue;
     }
+    let containerConfig: RegisteredGroup['containerConfig'];
+    if (row.container_config) {
+      try {
+        containerConfig = ContainerConfigSchema.parse(JSON.parse(row.container_config));
+      } catch (err) {
+        logger.warn(
+          { jid: row.jid, err },
+          'Invalid container_config in registered group, ignoring',
+        );
+      }
+    }
+
     result[row.jid] = {
       name: row.name,
       folder: row.folder,
       trigger: row.trigger_pattern,
       added_at: row.added_at,
-      containerConfig: row.container_config
-        ? JSON.parse(row.container_config)
-        : undefined,
+      containerConfig,
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,
       isMain: row.is_main === 1 ? true : undefined,
