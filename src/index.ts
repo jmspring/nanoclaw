@@ -42,6 +42,7 @@ import {
   getNewMessages,
   getRegisteredGroup,
   getRouterState,
+  backupDatabase,
   initDatabase,
   setRegisteredGroup,
   setRouterState,
@@ -791,11 +792,22 @@ async function main(): Promise<void> {
     },
     24 * 60 * 60 * 1000,
   ); // 24 hours
+
+  // Periodic database backup (runs daily)
+  const dbBackupInterval = setInterval(() => {
+    try {
+      backupDatabase();
+    } catch (err) {
+      logger.warn({ err }, 'Database backup failed');
+    }
+  }, 24 * 60 * 60 * 1000);
+
   // Clean up on shutdown
   const originalShutdown = shutdown;
   const shutdownWithCleanup = async (signal: string) => {
     clearInterval(sessionSaveInterval);
     clearInterval(logCleanupInterval);
+    clearInterval(dbBackupInterval);
     await originalShutdown(signal);
   };
   process.removeListener('SIGTERM', shutdown);

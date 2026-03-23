@@ -1,7 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import {
   _initTestDatabase,
+  backupDatabase,
   createTask,
   deleteTask,
   getAllChats,
@@ -480,5 +484,24 @@ describe('registered group isMain', () => {
     const group = groups['group@g.us'];
     expect(group).toBeDefined();
     expect(group.isMain).toBeUndefined();
+  });
+});
+
+// --- backupDatabase ---
+
+describe('backupDatabase', () => {
+  it('creates a backup file in store/backups', () => {
+    storeChatMetadata('group@g.us', '2024-01-01T00:00:00.000Z');
+    // backupDatabase uses the module-level DB_PATH which points to store/messages.db
+    // The in-memory test DB can still backup to disk
+    backupDatabase();
+    const backupDir = path.join(process.cwd(), 'store', 'backups');
+    const files = fs.readdirSync(backupDir).filter((f) => f.startsWith('messages-'));
+    expect(files.length).toBeGreaterThanOrEqual(1);
+    // Cleanup
+    for (const f of files) {
+      fs.unlinkSync(path.join(backupDir, f));
+    }
+    fs.rmdirSync(backupDir);
   });
 });
