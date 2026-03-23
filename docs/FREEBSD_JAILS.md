@@ -792,29 +792,21 @@ This isolates NanoClaw's privileges from your personal account.
 
 ## 7. Template Management
 
-### Initial Template Creation
+For the complete template build/update guide including sudo requirements, blue/green updates, and package management, see **[Template Setup](TEMPLATE_SETUP.md)**.
 
-The template setup script (`scripts/setup-jail-template.sh`) handles:
-
-1. Booting template as temporary jail
-2. Installing global npm packages
-3. Copying agent-runner source
-4. Installing dependencies
-5. Creating workspace structure
-6. Snapshotting the result
-
-### Updating the Template
-
-After modifying agent-runner or dependencies:
+### Quick Reference
 
 ```sh
-# First, destroy all active jail clones
+# Build or rebuild the template
+./scripts/setup-jail-template.sh
+
+# Destroy active clones first (required before rebuilding)
 sudo zfs list -H -o name -t filesystem | grep 'zroot/nanoclaw/jails/nanoclaw_' | while read ds; do
   sudo zfs destroy -r "$ds"
 done
 
-# Re-run template setup
-./scripts/setup-jail-template.sh
+# Verify template snapshot
+zfs list -t snapshot zroot/nanoclaw/jails/template@base
 ```
 
 ### Template Contents
@@ -846,24 +838,7 @@ done
     └── lib/node_modules/      # Global packages
 ```
 
-### Dependent Clones Error
-
-If you see:
-
-```
-Cannot update template: snapshot has dependent clones:
-zroot/nanoclaw/jails/nanoclaw_mygroup
-```
-
-You must destroy all jail datasets first:
-
-```sh
-# List clones
-sudo zfs list -H -o name -t filesystem | grep nanoclaw_
-
-# Destroy them
-sudo zfs destroy -r zroot/nanoclaw/jails/nanoclaw_mygroup
-```
+See also: [Jail Package Updates](JAIL_PACKAGE_UPDATES.md) for supply chain security and package update procedures.
 
 ## 8. Troubleshooting
 

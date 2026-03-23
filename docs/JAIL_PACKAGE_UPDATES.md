@@ -1,6 +1,6 @@
 # Jail Template Package Update Procedure
 
-This document describes how to update npm packages in the jail template while maintaining supply chain security.
+This document describes how to update npm packages in the jail template while maintaining supply chain security. For the full template build/update guide, see [Template Setup](TEMPLATE_SETUP.md).
 
 ## Security Principles
 
