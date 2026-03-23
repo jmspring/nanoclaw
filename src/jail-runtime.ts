@@ -813,11 +813,13 @@ async function setupJailResolv(jailPath: string): Promise<void> {
 
   try {
     const hostResolv = fs.readFileSync('/etc/resolv.conf', 'utf-8');
-    await sudoExec([
-      'sh',
-      '-c',
-      `cat > ${resolvPath} << 'RESOLV'\n${hostResolv}\nRESOLV`,
-    ]);
+    const tmpFile = path.join('/tmp', `nanoclaw-resolv-${crypto.randomUUID()}`);
+    fs.writeFileSync(tmpFile, hostResolv);
+    try {
+      await sudoExec(['cp', tmpFile, resolvPath]);
+    } finally {
+      fs.unlinkSync(tmpFile);
+    }
     logger.debug({ jailPath, resolvPath }, 'Copied host resolv.conf to jail');
   } catch (error) {
     logger.warn(
