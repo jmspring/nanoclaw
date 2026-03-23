@@ -16,16 +16,19 @@ import {
 } from './network.js';
 import { getJailPath, datasetExists } from './lifecycle.js';
 
-/** Cleanup audit logging */
+/** Cleanup audit logging (opt-in via NANOCLAW_AUDIT_LOG=true) */
+const AUDIT_ENABLED = process.env.NANOCLAW_AUDIT_LOG === 'true';
 const CLEANUP_AUDIT_LOG = path.join(JAIL_CONFIG.jailsPath, 'cleanup-audit.log');
 
-/** Log an audit entry for cleanup operations. */
+/** Log an audit entry for cleanup operations. No-op unless NANOCLAW_AUDIT_LOG=true. */
 export function logCleanupAudit(
   action: string,
   jailName: string,
   status: string,
   error: unknown = null,
 ): void {
+  if (!AUDIT_ENABLED) return;
+
   const timestamp = new Date().toISOString();
   const errorMessage = error instanceof Error ? error.message : null;
   const logLine = `${timestamp} [${status}] ${action} ${jailName}${errorMessage ? ` - ${errorMessage}` : ''}\n`;
@@ -88,48 +91,8 @@ export function listRunningNanoclawJails(): string[] {
   }
 }
 
-/** Clean up orphaned temp files in all running NanoClaw jails. */
-function cleanupOrphanedTempFiles(): void {
-  try {
-    const output = execFileSync('sudo', ['jls', '-N', 'name'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      encoding: 'utf-8',
-    });
-
-    const jailNames = output
-      .trim()
-      .split('\n')
-      .filter((line) => line.startsWith('nanoclaw_'));
-
-    if (jailNames.length === 0) return;
-
-    logger.info(
-      { count: jailNames.length },
-      'Cleaning orphaned temp files from running jails',
-    );
-
-    for (const jailName of jailNames) {
-      const tempPaths = ['/tmp/dist', '/tmp/input.json'];
-      for (const tempPath of tempPaths) {
-        try {
-          execFileSync('sudo', ['jexec', jailName, 'rm', '-rf', tempPath], {
-            stdio: 'pipe',
-            timeout: 5000,
-          });
-        } catch {
-          // File may not exist
-        }
-      }
-    }
-  } catch (err) {
-    logger.debug({ err }, 'No running jails found for temp file cleanup');
-  }
-}
-
 /** Kill orphaned NanoClaw jails from previous runs. */
 export function cleanupOrphans(): void {
-  cleanupOrphanedTempFiles();
-
   try {
     const output = execFileSync('sudo', ['jls', '-N', 'name'], {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -142,6 +105,18 @@ export function cleanupOrphans(): void {
       .filter((line) => line.startsWith('nanoclaw_'));
 
     for (const jailName of orphans) {
+      // Clean temp files before stopping
+      for (const tempPath of ['/tmp/dist', '/tmp/input.json']) {
+        try {
+          execFileSync('sudo', ['jexec', jailName, 'rm', '-rf', tempPath], {
+            stdio: 'pipe',
+            timeout: 5000,
+          });
+        } catch {
+          // File may not exist
+        }
+      }
+
       // Remove rctl limits
       try {
         execFileSync('sudo', ['rctl', '-r', `jail:${jailName}`], {
