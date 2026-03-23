@@ -129,7 +129,10 @@ function saveSessionState(): void {
     // Restrict permissions before rename so the final file is not world-readable
     fs.chmodSync(tempFile, 0o600);
     fs.renameSync(tempFile, SESSION_STATE_FILE);
-    logger.debug({ sessionCount: Object.keys(sessions).length }, 'Session state saved');
+    logger.debug(
+      { sessionCount: Object.keys(sessions).length },
+      'Session state saved',
+    );
   } catch (err) {
     logger.warn({ err }, 'Failed to save session state');
   }
@@ -156,7 +159,9 @@ function restoreSessionState(): void {
 
     // Merge restored sessions with database sessions
     // Database sessions are authoritative, but we preserve new sessions from the state file
-    for (const [groupFolder, sessionId] of Object.entries<string>(state.sessions)) {
+    for (const [groupFolder, sessionId] of Object.entries<string>(
+      state.sessions,
+    )) {
       if (sessionId && !sessions[groupFolder]) {
         sessions[groupFolder] = sessionId;
         setSession(groupFolder, sessionId);
@@ -164,7 +169,10 @@ function restoreSessionState(): void {
     }
 
     logger.info(
-      { restoredCount: Object.keys(state.sessions).length, timestamp: state.timestamp },
+      {
+        restoredCount: Object.keys(state.sessions).length,
+        timestamp: state.timestamp,
+      },
       'Session state restored from disk',
     );
   } catch (err) {
@@ -876,9 +884,12 @@ async function main(): Promise<void> {
   }
 
   // Periodic session state save (runs every 5 minutes for crash recovery)
-  const sessionSaveInterval = setInterval(() => {
-    saveSessionState();
-  }, 5 * 60 * 1000); // 5 minutes
+  const sessionSaveInterval = setInterval(
+    () => {
+      saveSessionState();
+    },
+    5 * 60 * 1000,
+  ); // 5 minutes
 
   // Periodic log cleanup (runs daily)
   const logCleanupInterval = setInterval(

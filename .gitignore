@@ -40,3 +40,8 @@ jails/
 groups/*/logs/jail-*.log
 
 agents-sdk-docs
+
+# Local analysis & planning artifacts
+analysis/
+.tickets/
+.claude/worktrees/

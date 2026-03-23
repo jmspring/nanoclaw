@@ -100,7 +100,10 @@ export function startCredentialProxy(
     const server = createServer((req, res) => {
       const remoteAddr = req.socket.remoteAddress;
       if (!isAllowedSource(remoteAddr)) {
-        logger.warn({ remoteAddr, url: req.url }, 'Credential proxy: rejected unauthorized source');
+        logger.warn(
+          { remoteAddr, url: req.url },
+          'Credential proxy: rejected unauthorized source',
+        );
         res.writeHead(403);
         res.end('Forbidden');
         return;
@@ -110,7 +113,10 @@ export function startCredentialProxy(
       if (validTokens.size > 0) {
         const token = req.headers['x-jail-token'] as string | undefined;
         if (!token || !validTokens.has(token)) {
-          logger.warn({ remoteAddr, url: req.url }, 'Credential proxy: invalid or missing jail token');
+          logger.warn(
+            { remoteAddr, url: req.url },
+            'Credential proxy: invalid or missing jail token',
+          );
           res.writeHead(403);
           res.end('Forbidden');
           return;
@@ -120,7 +126,10 @@ export function startCredentialProxy(
       // Request path validation — only proxy known API paths
       const reqPath = req.url || '';
       if (!reqPath.startsWith('/v1/') && !reqPath.startsWith('/api/oauth/')) {
-        logger.warn({ remoteAddr, url: req.url }, 'Credential proxy: rejected invalid path');
+        logger.warn(
+          { remoteAddr, url: req.url },
+          'Credential proxy: rejected invalid path',
+        );
         res.writeHead(404);
         res.end('Not Found');
         return;
@@ -129,7 +138,10 @@ export function startCredentialProxy(
       // Per-IP rate limiting
       const normalizedAddr = normalizeIP(remoteAddr);
       if (!checkRateLimit(normalizedAddr)) {
-        logger.warn({ remoteAddr, url: req.url }, 'Credential proxy: rate limit exceeded');
+        logger.warn(
+          { remoteAddr, url: req.url },
+          'Credential proxy: rate limit exceeded',
+        );
         res.writeHead(429);
         res.end('Too Many Requests');
         return;

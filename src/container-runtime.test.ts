@@ -14,16 +14,31 @@ vi.mock('./logger.js', () => ({
 // and mock networkInterfaces to include docker0 so detectProxyBindHost() doesn't throw
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('os')>();
-  const mockDocker0 = [{ address: '172.17.0.1', family: 'IPv4' as const, netmask: '255.255.0.0', internal: false, cidr: '172.17.0.1/16', mac: '00:00:00:00:00:00' }];
+  const mockDocker0 = [
+    {
+      address: '172.17.0.1',
+      family: 'IPv4' as const,
+      netmask: '255.255.0.0',
+      internal: false,
+      cidr: '172.17.0.1/16',
+      mac: '00:00:00:00:00:00',
+    },
+  ];
   return {
     ...actual,
     default: {
       ...actual,
       platform: () => 'linux',
-      networkInterfaces: () => ({ ...actual.networkInterfaces(), docker0: mockDocker0 }),
+      networkInterfaces: () => ({
+        ...actual.networkInterfaces(),
+        docker0: mockDocker0,
+      }),
     },
     platform: () => 'linux',
-    networkInterfaces: () => ({ ...actual.networkInterfaces(), docker0: mockDocker0 }),
+    networkInterfaces: () => ({
+      ...actual.networkInterfaces(),
+      docker0: mockDocker0,
+    }),
   };
 });
 

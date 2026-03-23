@@ -247,7 +247,9 @@ describe('Jail Mount Security', () => {
         ],
       };
 
-      expect(() => buildJailMounts(paths)).toThrow(/blocked pattern.*\.docker/i);
+      expect(() => buildJailMounts(paths)).toThrow(
+        /blocked pattern.*\.docker/i,
+      );
     });
   });
 
@@ -337,10 +339,14 @@ describe('Jail Mount Security', () => {
 
       // Should have all 5 core mounts
       expect(mounts).toHaveLength(5);
-      expect(mounts.some((m) => m.jailPath === '/workspace/project')).toBe(true);
+      expect(mounts.some((m) => m.jailPath === '/workspace/project')).toBe(
+        true,
+      );
       expect(mounts.some((m) => m.jailPath === '/workspace/group')).toBe(true);
       expect(mounts.some((m) => m.jailPath === '/workspace/ipc')).toBe(true);
-      expect(mounts.some((m) => m.jailPath === '/home/node/.claude')).toBe(true);
+      expect(mounts.some((m) => m.jailPath === '/home/node/.claude')).toBe(
+        true,
+      );
       expect(mounts.some((m) => m.jailPath === '/app/src')).toBe(true);
     });
   });

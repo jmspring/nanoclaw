@@ -11,7 +11,13 @@ vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 
-import { startCredentialProxy, isAllowedSource, registerJailToken, revokeJailToken, checkRateLimit } from './credential-proxy.js';
+import {
+  startCredentialProxy,
+  isAllowedSource,
+  registerJailToken,
+  revokeJailToken,
+  checkRateLimit,
+} from './credential-proxy.js';
 
 function makeRequest(
   port: number,
@@ -391,14 +397,11 @@ describe('credential-proxy', () => {
   it('rejects requests to invalid paths with 404', async () => {
     proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
 
-    const res = await makeRequest(
-      proxyPort,
-      {
-        method: 'GET',
-        path: '/etc/passwd',
-        headers: { 'content-type': 'application/json' },
-      },
-    );
+    const res = await makeRequest(proxyPort, {
+      method: 'GET',
+      path: '/etc/passwd',
+      headers: { 'content-type': 'application/json' },
+    });
 
     expect(res.statusCode).toBe(404);
     expect(res.body).toBe('Not Found');

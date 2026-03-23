@@ -543,7 +543,10 @@ function defaultSudoExec(
 }
 
 /** Default implementation: Execute a command with sudo synchronously */
-function defaultSudoExecSync(args: string[], options: SudoExecOptions = {}): string {
+function defaultSudoExecSync(
+  args: string[],
+  options: SudoExecOptions = {},
+): string {
   try {
     return execFileSync('sudo', args, {
       encoding: 'utf-8',
@@ -666,7 +669,10 @@ async function acquireEpairLock(): Promise<() => void> {
           fs.rmdirSync(EPAIR_LOCK_DIR);
           sessionTempFiles.delete(EPAIR_LOCK_DIR);
         } catch (err) {
-          logger.warn({ err, lockDir: EPAIR_LOCK_DIR }, 'Failed to release epair lock');
+          logger.warn(
+            { err, lockDir: EPAIR_LOCK_DIR },
+            'Failed to release epair lock',
+          );
         }
       };
     } catch (err) {
@@ -1353,10 +1359,17 @@ export async function createJail(
 
     // Create .claude directory and .claude.json for Claude Code (required before running as non-root)
     await sudoExec(['mkdir', '-p', `${jailPath}/home/node/.claude`]);
-    const tmpClaudeJson = path.join('/tmp', `nanoclaw-claude-json-${crypto.randomUUID()}`);
+    const tmpClaudeJson = path.join(
+      '/tmp',
+      `nanoclaw-claude-json-${crypto.randomUUID()}`,
+    );
     fs.writeFileSync(tmpClaudeJson, '{}');
     try {
-      await sudoExec(['cp', tmpClaudeJson, `${jailPath}/home/node/.claude.json`]);
+      await sudoExec([
+        'cp',
+        tmpClaudeJson,
+        `${jailPath}/home/node/.claude.json`,
+      ]);
     } finally {
       fs.unlinkSync(tmpClaudeJson);
     }
@@ -2192,7 +2205,10 @@ export function validatePfConfiguration(): void {
 export function ensureJailRuntimeRunning(): void {
   try {
     // Check ZFS is available
-    execFileSync('zfs', ['version'], { stdio: 'pipe', timeout: JAIL_QUICK_OP_TIMEOUT });
+    execFileSync('zfs', ['version'], {
+      stdio: 'pipe',
+      timeout: JAIL_QUICK_OP_TIMEOUT,
+    });
 
     // Check template snapshot exists
     const snapshot = `${JAIL_CONFIG.templateDataset}@${JAIL_CONFIG.templateSnapshot}`;
@@ -2202,7 +2218,10 @@ export function ensureJailRuntimeRunning(): void {
     });
 
     // Check jail command is available
-    execFileSync('which', ['jail'], { stdio: 'pipe', timeout: JAIL_QUICK_OP_TIMEOUT });
+    execFileSync('which', ['jail'], {
+      stdio: 'pipe',
+      timeout: JAIL_QUICK_OP_TIMEOUT,
+    });
 
     // Validate pf configuration matches network mode
     validatePfConfiguration();
