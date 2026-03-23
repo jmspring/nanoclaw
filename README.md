@@ -60,13 +60,15 @@ claude
 
 Then run `/setup`. Claude Code handles everything: dependencies, authentication, container setup and service configuration.
 
+> **FreeBSD users:** Run `scripts/setup-freebsd.sh` instead. See the [FreeBSD Jails guide](docs/FREEBSD_JAILS.md) for the full setup walkthrough.
+
 > **Note:** Commands prefixed with `/` (like `/setup`, `/add-whatsapp`) are [Claude Code skills](https://code.claude.com/docs/en/skills). Type them inside the `claude` CLI prompt, not in your regular terminal. If you don't have Claude Code installed, get it at [claude.com/product/claude-code](https://claude.com/product/claude-code).
 
 ## Philosophy
 
 **Small enough to understand.** One process, a few source files and no microservices. If you want to understand the full NanoClaw codebase, just ask Claude Code to walk you through it.
 
-**Secure by isolation.** Agents run in Linux containers (Apple Container on macOS, or Docker) and they can only see what's explicitly mounted. Bash access is safe because commands run inside the container, not on your host.
+**Secure by isolation.** Agents run in isolated sandboxes -- Linux containers (Apple Container on macOS, or Docker) or FreeBSD jails -- and they can only see what's explicitly mounted. Bash access is safe because commands run inside the sandbox, not on your host.
 
 **Built for the individual user.** NanoClaw isn't a monolithic framework; it's software that fits each user's exact needs. Instead of becoming bloatware, NanoClaw is designed to be bespoke. You make your own fork and have Claude Code modify it to match your needs.
 
@@ -88,7 +90,7 @@ Then run `/setup`. Claude Code handles everything: dependencies, authentication,
 - **Main channel** - Your private channel (self-chat) for admin control; every group is completely isolated
 - **Scheduled tasks** - Recurring jobs that run Claude and can message you back
 - **Web access** - Search and fetch content from the Web
-- **Container isolation** - Agents are sandboxed in [Docker Sandboxes](https://nanoclaw.dev/blog/nanoclaw-docker-sandboxes) (micro VM isolation), Apple Container (macOS), or Docker (macOS/Linux)
+- **Container isolation** - Agents are sandboxed in [Docker Sandboxes](https://nanoclaw.dev/blog/nanoclaw-docker-sandboxes) (micro VM isolation), Apple Container (macOS), Docker (macOS/Linux), or [FreeBSD jails](docs/FREEBSD_JAILS.md) (native kernel isolation with ZFS)
 - **Agent Swarms** - Spin up teams of specialized agents that collaborate on complex tasks
 - **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
 
@@ -142,10 +144,10 @@ Skills we'd like to see:
 
 ## Requirements
 
-- macOS or Linux
+- macOS, Linux, or FreeBSD
 - Node.js 20+
 - [Claude Code](https://claude.ai/download)
-- [Apple Container](https://github.com/apple/container) (macOS) or [Docker](https://docker.com/products/docker-desktop) (macOS/Linux)
+- [Apple Container](https://github.com/apple/container) (macOS) or [Docker](https://docker.com/products/docker-desktop) (macOS/Linux) or FreeBSD 15.0+ with ZFS (see [FreeBSD Jails guide](docs/FREEBSD_JAILS.md))
 
 ## Architecture
 
@@ -177,6 +179,10 @@ Docker provides cross-platform support (macOS, Linux and even Windows via WSL2) 
 **Can I run this on Linux?**
 
 Yes. Docker is the default runtime and works on both macOS and Linux. Just run `/setup`.
+
+**Can I run this on FreeBSD?**
+
+Yes. NanoClaw has a first-class FreeBSD jail runtime that provides near-zero-overhead isolation via ZFS copy-on-write clones, vnet network isolation, rctl resource limits, and restrictive devfs rulesets. Jails start in under 100ms and use almost no additional memory. Run `scripts/setup-freebsd.sh` to get started, and see the [FreeBSD Jails guide](docs/FREEBSD_JAILS.md) for full documentation. If you're coming from Docker/Linux, the [Linux-to-FreeBSD translation guide](docs/LINUX_TO_FREEBSD.md) maps familiar concepts.
 
 **Is this secure?**
 
