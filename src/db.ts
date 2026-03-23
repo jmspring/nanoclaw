@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { z } from 'zod';
 
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -11,6 +12,16 @@ import {
   ScheduledTask,
   TaskRunLog,
 } from './types.js';
+
+export const ContainerConfigSchema = z.object({
+  additionalMounts: z.array(z.object({
+    hostPath: z.string(),
+    containerPath: z.string(),
+    readonly: z.boolean().optional(),
+  })).optional(),
+}).passthrough();
+
+const DB_PATH = path.join(STORE_DIR, 'messages.db');
 
 let db: Database.Database;
 
@@ -142,10 +153,9 @@ function createSchema(database: Database.Database): void {
 }
 
 export function initDatabase(): void {
-  const dbPath = path.join(STORE_DIR, 'messages.db');
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
-  db = new Database(dbPath);
+  db = new Database(DB_PATH);
   createSchema(db);
 
   // Migrate from JSON files if they exist
@@ -156,6 +166,27 @@ export function initDatabase(): void {
 export function _initTestDatabase(): void {
   db = new Database(':memory:');
   createSchema(db);
+}
+
+/**
+ * Create a backup of the SQLite database.
+ * Keeps the 7 most recent backups, pruning older ones.
+ */
+export async function backupDatabase(): Promise<void> {
+  const backupDir = path.join(path.dirname(DB_PATH), 'backups');
+  fs.mkdirSync(backupDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = path.join(backupDir, `messages-${timestamp}.db`);
+  await db.backup(backupPath);
+  // Prune: keep only 7 most recent
+  const backups = fs
+    .readdirSync(backupDir)
+    .filter((f) => f.startsWith('messages-') && f.endsWith('.db'))
+    .sort()
+    .reverse();
+  for (const old of backups.slice(7)) {
+    fs.unlinkSync(path.join(backupDir, old));
+  }
 }
 
 /**
@@ -564,15 +595,25 @@ export function getRegisteredGroup(
     );
     return undefined;
   }
+  let containerConfig: RegisteredGroup['containerConfig'];
+  if (row.container_config) {
+    try {
+      containerConfig = ContainerConfigSchema.parse(JSON.parse(row.container_config));
+    } catch (err) {
+      logger.warn(
+        { jid: row.jid, err },
+        'Invalid container_config in registered group, ignoring',
+      );
+    }
+  }
+
   return {
     jid: row.jid,
     name: row.name,
     folder: row.folder,
     trigger: row.trigger_pattern,
     added_at: row.added_at,
-    containerConfig: row.container_config
-      ? JSON.parse(row.container_config)
-      : undefined,
+    containerConfig,
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
     isMain: row.is_main === 1 ? true : undefined,
@@ -618,14 +659,24 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       );
       continue;
     }
+    let containerConfig: RegisteredGroup['containerConfig'];
+    if (row.container_config) {
+      try {
+        containerConfig = ContainerConfigSchema.parse(JSON.parse(row.container_config));
+      } catch (err) {
+        logger.warn(
+          { jid: row.jid, err },
+          'Invalid container_config in registered group, ignoring',
+        );
+      }
+    }
+
     result[row.jid] = {
       name: row.name,
       folder: row.folder,
       trigger: row.trigger_pattern,
       added_at: row.added_at,
-      containerConfig: row.container_config
-        ? JSON.parse(row.container_config)
-        : undefined,
+      containerConfig,
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,
       isMain: row.is_main === 1 ? true : undefined,

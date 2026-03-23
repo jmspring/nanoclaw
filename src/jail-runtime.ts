@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import { logger } from './logger.js';
 import pino from 'pino';
 import {
+  DATA_DIR,
   JAIL_EXEC_TIMEOUT,
   JAIL_CREATE_TIMEOUT,
   JAIL_STOP_TIMEOUT,
@@ -125,14 +126,17 @@ export type SudoExecutorSync = (
   options?: SudoExecOptions,
 ) => string;
 
-/** Jail configuration - adjust paths for your environment */
+/** Root path for NanoClaw data — override via NANOCLAW_ROOT env var */
+const NANOCLAW_ROOT = process.env.NANOCLAW_ROOT || '/home/jims/code/nanoclaw';
+
+/** Jail configuration — paths derived from NANOCLAW_ROOT with per-path overrides */
 export const JAIL_CONFIG: JailConfig = {
-  templateDataset: 'zroot/nanoclaw/jails/template',
-  templateSnapshot: 'base',
-  jailsDataset: 'zroot/nanoclaw/jails',
-  jailsPath: '/home/jims/code/nanoclaw/jails',
-  workspacesPath: '/home/jims/code/nanoclaw/workspaces',
-  ipcPath: '/home/jims/code/nanoclaw/ipc',
+  templateDataset: process.env.NANOCLAW_TEMPLATE_DATASET || 'zroot/nanoclaw/jails/template',
+  templateSnapshot: process.env.NANOCLAW_TEMPLATE_SNAPSHOT || 'base',
+  jailsDataset: process.env.NANOCLAW_JAILS_DATASET || 'zroot/nanoclaw/jails',
+  jailsPath: process.env.NANOCLAW_JAILS_PATH || path.join(NANOCLAW_ROOT, 'jails'),
+  workspacesPath: process.env.NANOCLAW_WORKSPACES_PATH || path.join(NANOCLAW_ROOT, 'workspaces'),
+  ipcPath: process.env.NANOCLAW_IPC_PATH || path.join(NANOCLAW_ROOT, 'ipc'),
   // Network mode: "inherit" (ip4=inherit) or "restricted" (vnet with epair and pf)
   // IMPORTANT: Changing network mode requires updating pf configuration.
   // See docs/network-mode-migration.md or run scripts/switch-network-mode.sh
@@ -163,8 +167,10 @@ if (JAIL_CONFIG.networkMode === 'inherit') {
   );
 }
 
-/** Maximum number of epairs allowed (configurable via env var) */
-const MAX_EPAIRS = parseInt(process.env.NANOCLAW_MAX_EPAIRS || '200', 10);
+/** Maximum number of epairs allowed (configurable via env var, clamped 1-255) */
+const MAX_EPAIRS = Math.min(255, Math.max(1,
+  parseInt(process.env.NANOCLAW_MAX_EPAIRS || '200', 10) || 200,
+));
 
 /** Epair warning threshold (percentage) */
 const EPAIR_WARNING_THRESHOLD = 0.8;
@@ -172,11 +178,10 @@ const EPAIR_WARNING_THRESHOLD = 0.8;
 /** Track assigned epair numbers for cleanup */
 const assignedEpairs = new Map<string, number>(); // groupId -> epair number (e.g., 0 for epair0a/epair0b)
 
-/** Maximum concurrent jails (configurable via env var) */
-const MAX_CONCURRENT_JAILS = parseInt(
-  process.env.NANOCLAW_MAX_JAILS || '50',
-  10,
-);
+/** Maximum concurrent jails (configurable via env var, clamped 1-100) */
+const MAX_CONCURRENT_JAILS = Math.min(100, Math.max(1,
+  parseInt(process.env.NANOCLAW_MAX_JAILS || '50', 10) || 50,
+));
 
 /** Track active jails */
 const activeJails = new Set<string>();
@@ -190,7 +195,7 @@ export function getJailToken(groupId: string): string | undefined {
 }
 
 /** Path to persistent epair state file */
-const EPAIR_STATE_FILE = '/var/run/nanoclaw/epairs.json';
+const EPAIR_STATE_FILE = path.join(DATA_DIR, 'epairs.json');
 
 /** Cleanup audit logging */
 const CLEANUP_AUDIT_LOG = path.join(JAIL_CONFIG.jailsPath, 'cleanup-audit.log');
@@ -456,6 +461,11 @@ function getJailPath(jailName: string): string {
 /** Get the fstab path for a jail */
 function getFstabPath(jailName: string): string {
   return path.join(JAIL_CONFIG.jailsPath, `${jailName}.fstab`);
+}
+
+/** Get the jail.conf path for a jail */
+function getConfPath(jailName: string): string {
+  return path.join(JAIL_CONFIG.jailsPath, `${jailName}.conf`);
 }
 
 /**
@@ -944,9 +954,8 @@ function validateJailMount(mount: JailMount): void {
     );
   }
 
-  // Check for path traversal in hostPath
-  const normalizedHostPath = path.normalize(mount.hostPath);
-  if (normalizedHostPath.includes('..')) {
+  // Check for path traversal in hostPath (check raw path — normalize resolves ../)
+  if (mount.hostPath.split(path.sep).includes('..')) {
     throw new Error(
       `Security: jail mount hostPath contains path traversal: "${mount.hostPath}"`,
     );
@@ -970,8 +979,7 @@ function validateJailMount(mount: JailMount): void {
     );
   }
 
-  const normalizedJailPath = path.normalize(mount.jailPath);
-  if (normalizedJailPath.includes('..')) {
+  if (mount.jailPath.split(path.sep).includes('..')) {
     throw new Error(
       `Security: jail mount jailPath contains path traversal: "${mount.jailPath}"`,
     );
@@ -1134,7 +1142,9 @@ async function createMountPoints(
   const resolvedJailRoot = path.resolve(jailPath);
 
   for (const mount of mounts) {
-    const targetPath = path.resolve(jailPath, mount.jailPath);
+    // Strip leading / so path.resolve appends inside jailPath instead of ignoring it
+    const relativeMountPath = mount.jailPath.replace(/^\//, '');
+    const targetPath = path.resolve(jailPath, relativeMountPath);
 
     // Paranoid check: target must be within jail root (defense in depth)
     if (
@@ -1162,8 +1172,9 @@ async function mountNullfs(
   const resolvedJailRoot = path.resolve(jailPath);
 
   for (const mount of mounts) {
-    // Canonicalize paths with realpath-style resolution
-    const targetPath = path.resolve(jailPath, mount.jailPath);
+    // Strip leading / so path.resolve appends inside jailPath instead of ignoring it
+    const relativeMountPath = mount.jailPath.replace(/^\//, '');
+    const targetPath = path.resolve(jailPath, relativeMountPath);
 
     // Paranoid check: target must be within jail root (defense in depth)
     if (
@@ -1324,6 +1335,11 @@ export async function createJail(
     log.debug({ snapshot, dataset }, 'Cloning template');
     await sudoExec(['zfs', 'clone', snapshot, dataset]);
 
+    // Set per-jail ZFS properties
+    const jailQuota = process.env.NANOCLAW_JAIL_QUOTA || '1G';
+    await sudoExec(['zfs', 'set', `quota=${jailQuota}`, dataset]);
+    await sudoExec(['zfs', 'set', 'setuid=off', dataset]);
+
     // Create mount points inside jail
     await createMountPoints(mounts, jailPath);
 
@@ -1360,36 +1376,32 @@ export async function createJail(
       await setupJailResolv(jailPath);
     }
 
-    // Create the jail
-    const jailParams = [
-      'jail',
-      '-c',
-      `name=${jailName}`,
-      `path=${jailPath}`,
-      `host.hostname=${jailName}`,
-      'persist',
-    ];
-
-    // Network configuration
+    // Build network configuration for jail.conf
+    let networkConfig: string;
     if (JAIL_CONFIG.networkMode === 'inherit') {
-      jailParams.push('ip4=inherit', 'ip6=inherit');
-    } else if (JAIL_CONFIG.networkMode === 'restricted') {
-      // Use vnet with epair interface
-      jailParams.push('vnet');
-      if (epairInfo) {
-        jailParams.push(`vnet.interface=${epairInfo.jailIface}`);
-      }
+      networkConfig = '  ip4 = inherit;\n  ip6 = inherit;';
+    } else if (JAIL_CONFIG.networkMode === 'restricted' && epairInfo) {
+      networkConfig = `  vnet;\n  vnet.interface = "${epairInfo.jailIface}";`;
+    } else {
+      networkConfig = '  vnet;';
     }
 
-    // Jail security settings
-    jailParams.push(
-      'enforce_statfs=1',
-      'mount.devfs',
-      'devfs_ruleset=10', // Apply restrictive devfs ruleset (see etc/devfs.rules)
-    );
-
-    log.debug({ jailName, params: jailParams.slice(2) }, 'Starting jail');
-    await sudoExec(jailParams);
+    // Write jail.conf and create jail via jail -f
+    const confPath = getConfPath(jailName);
+    const confContent = `${jailName} {
+  path = "${jailPath}";
+  host.hostname = "${jailName}";
+  persist;
+  enforce_statfs = 2;
+  mount.devfs;
+  devfs_ruleset = 10;
+  securelevel = 3;
+${networkConfig}
+}
+`;
+    fs.writeFileSync(confPath, confContent);
+    log.debug({ jailName, confPath }, 'Wrote jail.conf');
+    await sudoExec(['jail', '-f', confPath, '-c', jailName]);
 
     // Apply resource limits to prevent runaway processes
     await applyRctlLimits(jailName);
@@ -1476,7 +1488,8 @@ export async function execInJail(
     // Wrap command in shell to set umask 002 for group-writable files.
     // This ensures files created by node inside the jail are writable by
     // the host user (jims) via the shared wheel group.
-    args.push('sh', '-c', 'umask 002; exec "$@"', '--');
+    // Note: use '_' as $0 placeholder, not '--' which jexec consumes as end-of-options
+    args.push('sh', '-c', 'umask 002; exec "$@"', '_');
 
     // Environment variables must be passed via env command inside the jail
     // FreeBSD jexec does not support -e flags
@@ -1629,7 +1642,8 @@ export function spawnInJail(
     args.push(...command.slice(3));
   } else {
     // For non-shell commands, wrap in sh -c to set umask
-    args.push('sh', '-c', `umask 002; exec "$@"`, '--', ...command);
+    // Note: use '_' as $0 placeholder, not '--' which jexec consumes as end-of-options
+    args.push('sh', '-c', `umask 002; exec "$@"`, '_', ...command);
   }
 
   logger.debug(
@@ -1832,6 +1846,7 @@ export async function cleanupJail(
   const dataset = getJailDataset(jailName);
   const jailPath = getJailPath(jailName);
   const fstabPath = getFstabPath(jailName);
+  const confPath = getConfPath(jailName);
 
   logger.info({ jailName, groupId }, 'Cleaning up jail');
   logCleanupAudit('CLEANUP_START', jailName, 'INFO');
@@ -1978,6 +1993,22 @@ export async function cleanupJail(
           'Could not remove fstab',
         );
         logCleanupAudit('REMOVE_FSTAB', jailName, 'FAILED', error);
+        errors.push(error as Error);
+      }
+    }
+
+    // Remove jail.conf file
+    if (fs.existsSync(confPath)) {
+      try {
+        fs.unlinkSync(confPath);
+        logger.debug({ confPath, jailName }, 'Removed jail.conf');
+        logCleanupAudit('REMOVE_CONF', jailName, 'SUCCESS');
+      } catch (error) {
+        logger.warn(
+          { confPath, jailName, groupId, err: error },
+          'Could not remove jail.conf',
+        );
+        logCleanupAudit('REMOVE_CONF', jailName, 'FAILED', error);
         errors.push(error as Error);
       }
     }

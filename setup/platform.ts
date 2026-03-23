@@ -5,13 +5,14 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 
-export type Platform = 'macos' | 'linux' | 'unknown';
-export type ServiceManager = 'launchd' | 'systemd' | 'none';
+export type Platform = 'macos' | 'linux' | 'freebsd' | 'unknown';
+export type ServiceManager = 'launchd' | 'systemd' | 'rcd' | 'none';
 
 export function getPlatform(): Platform {
   const platform = os.platform();
   if (platform === 'darwin') return 'macos';
   if (platform === 'linux') return 'linux';
+  if (platform === 'freebsd') return 'freebsd';
   return 'unknown';
 }
 
@@ -91,6 +92,7 @@ export function openBrowser(url: string): boolean {
 export function getServiceManager(): ServiceManager {
   const platform = getPlatform();
   if (platform === 'macos') return 'launchd';
+  if (platform === 'freebsd') return 'rcd';
   if (platform === 'linux') {
     if (hasSystemd()) return 'systemd';
     return 'none';

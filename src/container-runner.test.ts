@@ -51,6 +51,34 @@ vi.mock('./mount-security.js', () => ({
   validateAdditionalMounts: vi.fn(() => []),
 }));
 
+// Mock container-runtime to force Docker path
+vi.mock('./container-runtime.js', () => ({
+  CONTAINER_HOST_GATEWAY: 'host.docker.internal',
+  CONTAINER_RUNTIME_BIN: 'docker',
+  getRuntime: vi.fn(() => 'docker'),
+  hostGatewayArgs: vi.fn(() => ['--add-host', 'host.docker.internal:host-gateway']),
+  readonlyMountArgs: vi.fn((hostPath: string, containerPath: string) => [
+    '-v', `${hostPath}:${containerPath}:ro`,
+  ]),
+  stopContainerArgs: vi.fn((name: string) => ['docker', ['stop', name]]),
+}));
+
+// Mock credential-proxy
+vi.mock('./credential-proxy.js', () => ({
+  detectAuthMode: vi.fn(() => 'api-key'),
+}));
+
+// Mock log-rotation
+vi.mock('./log-rotation.js', () => ({
+  writeRotatingLog: vi.fn(),
+}));
+
+// Mock group-folder
+vi.mock('./group-folder.js', () => ({
+  resolveGroupFolderPath: vi.fn((folder: string) => `/tmp/nanoclaw-test-groups/${folder}`),
+  resolveGroupIpcPath: vi.fn((folder: string) => `/tmp/nanoclaw-test-data/ipc/${folder}`),
+}));
+
 // Create a controllable fake ChildProcess
 function createFakeProcess() {
   const proc = new EventEmitter() as EventEmitter & {
@@ -86,8 +114,9 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import { runContainerAgent, ContainerOutput, hashFile } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
+import { logger } from './logger.js';
 
 const testGroup: RegisteredGroup = {
   name: 'Test Group',
@@ -110,6 +139,88 @@ function emitOutputMarker(
   const json = JSON.stringify(output);
   proc.stdout.push(`${OUTPUT_START_MARKER}\n${json}\n${OUTPUT_END_MARKER}\n`);
 }
+
+describe('CLAUDE.md integrity checking', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('logs warning when CLAUDE.md changes during agent run', async () => {
+    const fs = (await import('fs')).default;
+    const claudeMdPath = '/tmp/nanoclaw-test-groups/test-group/CLAUDE.md';
+
+    // First read returns hash A, second returns hash B
+    let callCount = 0;
+    vi.mocked(fs.readFileSync).mockImplementation(((path: string) => {
+      if (typeof path === 'string' && path === claudeMdPath) {
+        callCount++;
+        return callCount === 1 ? 'original content' : 'modified content';
+      }
+      return '';
+    }) as typeof fs.readFileSync);
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'Done',
+      newSessionId: 'session-789',
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await resultPromise;
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ preHash: expect.any(String), postHash: expect.any(String) }),
+      'CLAUDE.md was modified during agent run',
+    );
+  });
+});
+
+describe('agent-runner mount is read-only', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('mounts agent-runner source as read-only in Docker', async () => {
+    const { spawn } = await import('child_process');
+    const { readonlyMountArgs } = await import('./container-runtime.js');
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+    );
+
+    fakeProc.stdout.push(`${OUTPUT_START_MARKER}\n${JSON.stringify({ status: 'success', result: 'ok' })}\n${OUTPUT_END_MARKER}\n`);
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    // Verify readonlyMountArgs was called for /app/src
+    expect(readonlyMountArgs).toHaveBeenCalledWith(
+      expect.stringContaining('agent-runner-src'),
+      '/app/src',
+    );
+  });
+});
 
 describe('container-runner timeout behavior', () => {
   beforeEach(() => {

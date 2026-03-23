@@ -1,13 +1,18 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import {
   _initTestDatabase,
+  backupDatabase,
   createTask,
   deleteTask,
   getAllChats,
   getAllRegisteredGroups,
   getMessagesSince,
   getNewMessages,
+  getRegisteredGroup,
   getTaskById,
   setRegisteredGroup,
   storeChatMetadata,
@@ -480,5 +485,93 @@ describe('registered group isMain', () => {
     const group = groups['group@g.us'];
     expect(group).toBeDefined();
     expect(group.isMain).toBeUndefined();
+  });
+});
+
+// --- container_config schema validation ---
+
+describe('container_config Zod validation', () => {
+  it('accepts valid container_config with additionalMounts', () => {
+    setRegisteredGroup('cfg@g.us', {
+      name: 'Config Group',
+      folder: 'config-group',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+      containerConfig: {
+        additionalMounts: [
+          { hostPath: '/data/shared', containerPath: '/workspace/extra/shared', readonly: true },
+        ],
+      },
+    });
+
+    const group = getRegisteredGroup('cfg@g.us');
+    expect(group).toBeDefined();
+    expect(group!.containerConfig?.additionalMounts).toHaveLength(1);
+    expect(group!.containerConfig!.additionalMounts![0].hostPath).toBe('/data/shared');
+  });
+
+  it('accepts container_config with extra passthrough fields', () => {
+    setRegisteredGroup('extra@g.us', {
+      name: 'Extra Group',
+      folder: 'extra-group',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+      containerConfig: {
+        timeout: 60000,
+      } as any,
+    });
+
+    const group = getRegisteredGroup('extra@g.us');
+    expect(group).toBeDefined();
+    expect((group!.containerConfig as any)?.timeout).toBe(60000);
+  });
+
+  it('rejects malformed container_config and returns undefined', () => {
+    // Manually insert a row with invalid container_config JSON structure
+    // The schema expects additionalMounts to be an array of objects
+    const Database = require('better-sqlite3');
+    // Use the internal db by going through setRegisteredGroup first then corrupting
+    setRegisteredGroup('bad@g.us', {
+      name: 'Bad Group',
+      folder: 'bad-group',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    // Corrupt the container_config directly in DB
+    const db = new Database(':memory:');
+    // We can't access the internal db directly, so test via getAllRegisteredGroups
+    // Instead, set a containerConfig with invalid additionalMounts type
+    setRegisteredGroup('bad2@g.us', {
+      name: 'Bad Group 2',
+      folder: 'bad-group-2',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+      containerConfig: {
+        additionalMounts: 'not-an-array',
+      } as any,
+    });
+
+    const group = getRegisteredGroup('bad2@g.us');
+    expect(group).toBeDefined();
+    // Zod rejects the string where an array is expected
+    expect(group!.containerConfig).toBeUndefined();
+  });
+});
+
+// --- backupDatabase ---
+
+describe('backupDatabase', () => {
+  it('creates a backup file in store/backups', async () => {
+    storeChatMetadata('group@g.us', '2024-01-01T00:00:00.000Z');
+    await backupDatabase();
+    const backupDir = path.join(process.cwd(), 'store', 'backups');
+    const files = fs.readdirSync(backupDir).filter((f) => f.startsWith('messages-'));
+    expect(files.length).toBeGreaterThanOrEqual(1);
+    // Cleanup
+    for (const f of files) {
+      fs.unlinkSync(path.join(backupDir, f));
+    }
+    fs.rmdirSync(backupDir);
   });
 });

@@ -24,6 +24,8 @@ export interface IpcDeps {
   ) => void;
 }
 
+export const IPC_MAX_FILE_SIZE = 1_048_576; // 1MB
+
 let ipcWatcherRunning = false;
 
 export function startIpcWatcher(deps: IpcDeps): void {
@@ -75,6 +77,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
             const filePath = path.join(messagesDir, file);
             const processingPath = path.join(processingDir, file);
             try {
+              const stat = fs.statSync(filePath);
+              if (stat.size > IPC_MAX_FILE_SIZE) {
+                logger.warn({ file: filePath, size: stat.size }, 'IPC file too large, skipping');
+                fs.unlinkSync(filePath);
+                continue;
+              }
               // Atomic: rename before reading to prevent double-processing
               fs.renameSync(filePath, processingPath);
               const data = JSON.parse(fs.readFileSync(processingPath, 'utf-8'));
@@ -135,6 +143,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
             const filePath = path.join(tasksDir, file);
             const processingPath = path.join(processingDir, file);
             try {
+              const stat = fs.statSync(filePath);
+              if (stat.size > IPC_MAX_FILE_SIZE) {
+                logger.warn({ file: filePath, size: stat.size }, 'IPC file too large, skipping');
+                fs.unlinkSync(filePath);
+                continue;
+              }
               // Atomic: rename before reading to prevent double-processing
               fs.renameSync(filePath, processingPath);
               const data = JSON.parse(fs.readFileSync(processingPath, 'utf-8'));

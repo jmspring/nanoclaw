@@ -8,7 +8,7 @@ import {
   getTaskById,
   setRegisteredGroup,
 } from './db.js';
-import { processTaskIpc, IpcDeps } from './ipc.js';
+import { processTaskIpc, IpcDeps, IPC_MAX_FILE_SIZE } from './ipc.js';
 import { RegisteredGroup } from './types.js';
 
 // Set up registered groups used across tests
@@ -674,5 +674,13 @@ describe('register_group success', () => {
     );
 
     expect(getRegisteredGroup('partial@g.us')).toBeUndefined();
+  });
+});
+
+// --- IPC file size limit ---
+
+describe('IPC file size limit', () => {
+  it('exports a 1MB limit constant', () => {
+    expect(IPC_MAX_FILE_SIZE).toBe(1_048_576);
   });
 });

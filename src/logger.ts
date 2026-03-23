@@ -1,10 +1,39 @@
+import fs from 'fs';
+import path from 'path';
 import pino from 'pino';
 import { randomUUID } from 'crypto';
+import { createStream, RotatingFileStream } from 'rotating-file-stream';
+import pretty from 'pino-pretty';
 
-export const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
-  transport: { target: 'pino-pretty', options: { colorize: true } },
-});
+const LOG_DIR = path.join(process.cwd(), 'logs');
+
+// Rotating file stream for persistent logs
+let logFileStream: RotatingFileStream | undefined;
+try {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  logFileStream = createStream('nanoclaw.log', {
+    path: LOG_DIR,
+    size: '10M',
+    interval: '1d',
+    compress: 'gzip',
+    maxFiles: 5,
+  });
+} catch {
+  // Fall back to console-only logging if log dir is not writable
+}
+
+const streams: pino.StreamEntry[] = [
+  { level: 'trace', stream: pretty({ colorize: true }) },
+];
+
+if (logFileStream) {
+  streams.push({ level: 'trace', stream: logFileStream });
+}
+
+export const logger = pino(
+  { level: process.env.LOG_LEVEL || 'info' },
+  pino.multistream(streams),
+);
 
 // Route uncaught errors through pino so they get timestamps in stderr
 process.on('uncaughtException', (err) => {

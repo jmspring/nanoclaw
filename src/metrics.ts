@@ -9,7 +9,8 @@ import { logger } from './logger.js';
 
 /** Configuration for metrics server */
 export interface MetricsConfig {
-  enabled: boolean;
+  healthEnabled: boolean;
+  metricsEnabled: boolean;
   port: number;
 }
 
@@ -282,8 +283,10 @@ function formatPrometheusMetrics(): string {
 }
 
 /**
- * Start the metrics HTTP server.
- * @param config - Metrics configuration
+ * Start the health/metrics HTTP server.
+ * Health endpoint is served when healthEnabled is true (default).
+ * Metrics endpoint is served only when metricsEnabled is true (opt-in).
+ * @param config - Server configuration
  * @param templateDataset - The template dataset
  * @param snapshotName - The snapshot name
  * @param poolName - The ZFS pool name
@@ -297,8 +300,8 @@ export function startMetricsServer(
   poolName: string,
   jailsPath?: string,
 ): http.Server | null {
-  if (!config.enabled) {
-    logger.info('Metrics server disabled');
+  if (!config.healthEnabled && !config.metricsEnabled) {
+    logger.info('Health and metrics server disabled');
     return null;
   }
 
@@ -311,13 +314,13 @@ export function startMetricsServer(
     }
 
     // Route handling
-    if (req.url === '/health') {
+    if (req.url === '/health' && config.healthEnabled) {
       const health = getHealthStatus(templateDataset, snapshotName, poolName, jailsPath || '');
       const statusCode = health.healthy ? 200 : 503;
 
       res.writeHead(statusCode, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(health, null, 2) + '\n');
-    } else if (req.url === '/metrics') {
+    } else if (req.url === '/metrics' && config.metricsEnabled) {
       const metrics = formatPrometheusMetrics();
 
       res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4' });
@@ -328,10 +331,15 @@ export function startMetricsServer(
     }
   });
 
+  const endpoints = [
+    config.healthEnabled ? '/health' : null,
+    config.metricsEnabled ? '/metrics' : null,
+  ].filter(Boolean);
+
   server.listen(config.port, '127.0.0.1', () => {
     logger.info(
-      { port: config.port },
-      'Metrics server listening on http://127.0.0.1:' + config.port,
+      { port: config.port, endpoints },
+      'Health/metrics server listening on http://127.0.0.1:' + config.port,
     );
   });
 
