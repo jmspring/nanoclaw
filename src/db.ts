@@ -21,6 +21,8 @@ export const ContainerConfigSchema = z.object({
   })).optional(),
 }).passthrough();
 
+const DB_PATH = path.join(STORE_DIR, 'messages.db');
+
 let db: Database.Database;
 
 function createSchema(database: Database.Database): void {
@@ -151,10 +153,9 @@ function createSchema(database: Database.Database): void {
 }
 
 export function initDatabase(): void {
-  const dbPath = path.join(STORE_DIR, 'messages.db');
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
-  db = new Database(dbPath);
+  db = new Database(DB_PATH);
   createSchema(db);
 
   // Migrate from JSON files if they exist
@@ -165,6 +166,27 @@ export function initDatabase(): void {
 export function _initTestDatabase(): void {
   db = new Database(':memory:');
   createSchema(db);
+}
+
+/**
+ * Create a backup of the SQLite database.
+ * Keeps the 7 most recent backups, pruning older ones.
+ */
+export async function backupDatabase(): Promise<void> {
+  const backupDir = path.join(path.dirname(DB_PATH), 'backups');
+  fs.mkdirSync(backupDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = path.join(backupDir, `messages-${timestamp}.db`);
+  await db.backup(backupPath);
+  // Prune: keep only 7 most recent
+  const backups = fs
+    .readdirSync(backupDir)
+    .filter((f) => f.startsWith('messages-') && f.endsWith('.db'))
+    .sort()
+    .reverse();
+  for (const old of backups.slice(7)) {
+    fs.unlinkSync(path.join(backupDir, old));
+  }
 }
 
 /**

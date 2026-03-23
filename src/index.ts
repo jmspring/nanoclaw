@@ -8,6 +8,7 @@ import {
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
   GROUPS_DIR,
+  HEALTH_ENABLED,
   IDLE_TIMEOUT,
   METRICS_ENABLED,
   METRICS_PORT,
@@ -42,6 +43,7 @@ import {
   getNewMessages,
   getRegisteredGroup,
   getRouterState,
+  backupDatabase,
   initDatabase,
   setRegisteredGroup,
   setRouterState,
@@ -611,7 +613,7 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
-  // Start metrics server if enabled (jail runtime only)
+  // Start health/metrics server (jail runtime only)
   let metricsServer: ReturnType<typeof startMetricsServer> = null;
   if (getRuntime() === 'jail') {
     const jailRuntime = await import('./jail-runtime.js');
@@ -627,7 +629,11 @@ async function main(): Promise<void> {
     }
 
     metricsServer = startMetricsServer(
-      { enabled: METRICS_ENABLED, port: METRICS_PORT },
+      {
+        healthEnabled: HEALTH_ENABLED,
+        metricsEnabled: METRICS_ENABLED,
+        port: METRICS_PORT,
+      },
       jailRuntime.JAIL_CONFIG.templateDataset,
       jailRuntime.JAIL_CONFIG.templateSnapshot,
       jailRuntime.JAIL_CONFIG.jailsDataset.split('/')[0], // Extract pool name (e.g., zroot)
@@ -791,11 +797,20 @@ async function main(): Promise<void> {
     },
     24 * 60 * 60 * 1000,
   ); // 24 hours
+
+  // Periodic database backup (runs daily)
+  const dbBackupInterval = setInterval(() => {
+    backupDatabase().catch((err) => {
+      logger.warn({ err }, 'Database backup failed');
+    });
+  }, 24 * 60 * 60 * 1000);
+
   // Clean up on shutdown
   const originalShutdown = shutdown;
   const shutdownWithCleanup = async (signal: string) => {
     clearInterval(sessionSaveInterval);
     clearInterval(logCleanupInterval);
+    clearInterval(dbBackupInterval);
     await originalShutdown(signal);
   };
   process.removeListener('SIGTERM', shutdown);

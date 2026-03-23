@@ -1,7 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import {
   _initTestDatabase,
+  backupDatabase,
   createTask,
   deleteTask,
   getAllChats,
@@ -552,5 +556,22 @@ describe('container_config Zod validation', () => {
     expect(group).toBeDefined();
     // Zod rejects the string where an array is expected
     expect(group!.containerConfig).toBeUndefined();
+  });
+});
+
+// --- backupDatabase ---
+
+describe('backupDatabase', () => {
+  it('creates a backup file in store/backups', async () => {
+    storeChatMetadata('group@g.us', '2024-01-01T00:00:00.000Z');
+    await backupDatabase();
+    const backupDir = path.join(process.cwd(), 'store', 'backups');
+    const files = fs.readdirSync(backupDir).filter((f) => f.startsWith('messages-'));
+    expect(files.length).toBeGreaterThanOrEqual(1);
+    // Cleanup
+    for (const f of files) {
+      fs.unlinkSync(path.join(backupDir, f));
+    }
+    fs.rmdirSync(backupDir);
   });
 });
