@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import pino from 'pino';
@@ -614,6 +615,17 @@ async function main(): Promise<void> {
   let metricsServer: ReturnType<typeof startMetricsServer> = null;
   if (getRuntime() === 'jail') {
     const jailRuntime = await import('./jail-runtime.js');
+    // Verify pf is loaded when using restricted network mode
+    if (jailRuntime.JAIL_CONFIG.networkMode === 'restricted') {
+      try {
+        execFileSync('pfctl', ['-s', 'info'], { stdio: 'pipe' });
+      } catch {
+        logger.warn(
+          'pf firewall does not appear to be running. Restricted network mode requires pf rules for jail connectivity. See docs/FREEBSD_JAILS.md.',
+        );
+      }
+    }
+
     metricsServer = startMetricsServer(
       { enabled: METRICS_ENABLED, port: METRICS_PORT },
       jailRuntime.JAIL_CONFIG.templateDataset,

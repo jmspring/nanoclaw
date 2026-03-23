@@ -137,7 +137,7 @@ export const JAIL_CONFIG: JailConfig = {
   // See docs/network-mode-migration.md or run scripts/switch-network-mode.sh
   networkMode:
     (process.env.NANOCLAW_JAIL_NETWORK_MODE as 'inherit' | 'restricted') ||
-    'inherit',
+    'restricted',
   // Jail network configuration (used when networkMode === 'restricted')
   // Each jail gets its own /30 subnet via epair from pool 10.99.0.0/24:
   //   - Jail N uses subnet 10.99.N.0/30 (where N = epair number)
@@ -154,6 +154,13 @@ export const JAIL_CONFIG: JailConfig = {
     pcpu: process.env.NANOCLAW_JAIL_PCPU || '80', // CPU percentage limit
   },
 };
+
+// Warn if running with unrestricted network access
+if (JAIL_CONFIG.networkMode === 'inherit') {
+  logger.warn(
+    'Running with ip4=inherit — jails have full host network access. Set NANOCLAW_JAIL_NETWORK_MODE=restricted for production use.',
+  );
+}
 
 /** Maximum number of epairs allowed (configurable via env var) */
 const MAX_EPAIRS = parseInt(process.env.NANOCLAW_MAX_EPAIRS || '200', 10);
