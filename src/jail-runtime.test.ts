@@ -21,6 +21,7 @@ import {
   setJailRuntimeDeps,
   resetJailRuntimeDeps,
   isJailRunning,
+  isJailRunningAsync,
   sanitizeJailName,
   getJailName,
   stopJail,
@@ -89,78 +90,115 @@ describe('jail-runtime dependency injection', () => {
     });
   });
 
+  describe('isJailRunningAsync', () => {
+    it('returns true when jail is running', async () => {
+      mockSudoExec.mockResolvedValue({ stdout: '123\n', stderr: '' });
+
+      const result = await isJailRunningAsync('nanoclaw_test');
+
+      expect(result).toBe(true);
+      expect(mockSudoExec).toHaveBeenCalledWith(
+        ['jls', '-j', 'nanoclaw_test', 'jid'],
+        { stdio: 'pipe' },
+      );
+    });
+
+    it('returns false when jail is not running', async () => {
+      mockSudoExec.mockRejectedValue(new Error('jail not found'));
+
+      const result = await isJailRunningAsync('nanoclaw_test');
+
+      expect(result).toBe(false);
+    });
+
+    it('returns false when jls returns empty output', async () => {
+      mockSudoExec.mockResolvedValue({ stdout: '', stderr: '' });
+
+      const result = await isJailRunningAsync('nanoclaw_test');
+
+      expect(result).toBe(false);
+    });
+  });
+
   describe('stopJail', () => {
     it('stops a running jail successfully', async () => {
-      // Mock jail as running
-      mockSudoExecSync.mockReturnValue('123\n');
-      // Mock successful jail stop
-      mockSudoExec.mockResolvedValue({ stdout: '', stderr: '' });
+      // Mock isJailRunningAsync returning true (first call), then jail stop
+      mockSudoExec
+        .mockResolvedValueOnce({ stdout: '123\n', stderr: '' }) // isJailRunningAsync
+        .mockResolvedValueOnce({ stdout: '', stderr: '' }); // jail -r
 
       await stopJail('test-group');
 
-      // Should check if running
-      expect(mockSudoExecSync).toHaveBeenCalledWith(
+      // Should check if running via async
+      expect(mockSudoExec).toHaveBeenNthCalledWith(
+        1,
         ['jls', '-j', 'nanoclaw_test_group', 'jid'],
         { stdio: 'pipe' },
       );
       // Should stop the jail
-      expect(mockSudoExec).toHaveBeenCalledWith(
+      expect(mockSudoExec).toHaveBeenNthCalledWith(
+        2,
         ['jail', '-r', 'nanoclaw_test_group'],
         { timeout: 15000 },
       );
     });
 
     it('does nothing when jail is not running', async () => {
-      // Mock jail as not running
-      mockSudoExecSync.mockReturnValue('');
+      // Mock isJailRunningAsync returning false
+      mockSudoExec.mockResolvedValueOnce({ stdout: '', stderr: '' });
 
       await stopJail('test-group');
 
-      // Should check if running
-      expect(mockSudoExecSync).toHaveBeenCalledWith(
+      // Should check if running via async
+      expect(mockSudoExec).toHaveBeenCalledWith(
         ['jls', '-j', 'nanoclaw_test_group', 'jid'],
         { stdio: 'pipe' },
       );
-      // Should NOT try to stop
-      expect(mockSudoExec).not.toHaveBeenCalled();
+      // Should NOT try to stop (only 1 call total)
+      expect(mockSudoExec).toHaveBeenCalledTimes(1);
     });
 
     it('force stops jail when graceful stop fails', async () => {
-      // Mock jail as running
-      mockSudoExecSync.mockReturnValue('123\n');
-      // Mock graceful stop failing, then force stop succeeding
+      // Mock isJailRunningAsync returning true, graceful stop failing, then force stop succeeding
       mockSudoExec
-        .mockRejectedValueOnce(new Error('jail -r failed'))
-        .mockResolvedValueOnce({ stdout: '', stderr: '' }) // kill processes
-        .mockResolvedValueOnce({ stdout: '', stderr: '' }); // force stop
+        .mockResolvedValueOnce({ stdout: '123\n', stderr: '' }) // isJailRunningAsync
+        .mockRejectedValueOnce(new Error('jail -r failed'))     // graceful stop
+        .mockResolvedValueOnce({ stdout: '', stderr: '' })      // kill processes
+        .mockResolvedValueOnce({ stdout: '', stderr: '' });     // force stop
 
       await stopJail('test-group');
 
-      // Should attempt graceful stop first
+      // Should check running first
       expect(mockSudoExec).toHaveBeenNthCalledWith(
         1,
+        ['jls', '-j', 'nanoclaw_test_group', 'jid'],
+        { stdio: 'pipe' },
+      );
+      // Should attempt graceful stop
+      expect(mockSudoExec).toHaveBeenNthCalledWith(
+        2,
         ['jail', '-r', 'nanoclaw_test_group'],
         { timeout: 15000 },
       );
       // Should kill processes
       expect(mockSudoExec).toHaveBeenNthCalledWith(
-        2,
+        3,
         ['jexec', 'nanoclaw_test_group', 'kill', '-9', '-1'],
         { timeout: 5000 },
       );
       // Should force stop
       expect(mockSudoExec).toHaveBeenNthCalledWith(
-        3,
+        4,
         ['jail', '-r', 'nanoclaw_test_group'],
         { timeout: 10000 },
       );
     });
 
     it('throws when both graceful and force stop fail', async () => {
-      // Mock jail as running
-      mockSudoExecSync.mockReturnValue('123\n');
-      // Mock all stop attempts failing
-      mockSudoExec.mockRejectedValue(new Error('stop failed'));
+      // Mock isJailRunningAsync returning true, all stops failing
+      mockSudoExec
+        .mockResolvedValueOnce({ stdout: '123\n', stderr: '' }) // isJailRunningAsync
+        .mockRejectedValue(new Error('stop failed'));
 
       await expect(stopJail('test-group')).rejects.toThrow('stop failed');
     });

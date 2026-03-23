@@ -272,7 +272,7 @@ async function cleanupJailTempFiles(groupId: string): Promise<void> {
     tempPaths = new Set(['/tmp/dist', '/tmp/input.json']);
   }
 
-  if (!isJailRunning(jailName)) {
+  if (!(await isJailRunningAsync(jailName))) {
     logger.debug(
       { groupId, jailName },
       'Jail not running, skipping temp file cleanup',
@@ -845,7 +845,7 @@ async function setupJailResolv(jailPath: string): Promise<void> {
   }
 }
 
-/** Check if a jail exists and is running */
+/** Check if a jail exists and is running (synchronous — use only in sync startup paths) */
 export function isJailRunning(jailName: string): boolean {
   const sudoExecSync = getSudoExecSync();
   try {
@@ -853,6 +853,19 @@ export function isJailRunning(jailName: string): boolean {
       stdio: 'pipe',
     });
     return output.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Check if a jail exists and is running (async — preferred in hot paths) */
+export async function isJailRunningAsync(jailName: string): Promise<boolean> {
+  const sudoExec = getSudoExec();
+  try {
+    const result = await sudoExec(['jls', '-j', jailName, 'jid'], {
+      stdio: 'pipe',
+    });
+    return result.stdout.trim().length > 0;
   } catch {
     return false;
   }
@@ -1243,7 +1256,7 @@ export async function createJail(
   log.info({ jailName, groupId }, 'Creating jail');
 
   // Check if jail already exists
-  if (isJailRunning(jailName)) {
+  if (await isJailRunningAsync(jailName)) {
     log.info({ jailName }, 'Jail already running, stopping first');
     await stopJail(groupId);
   }
@@ -1398,7 +1411,7 @@ export async function execInJail(
   const jailName = getJailName(groupId);
   const { env = {}, cwd, timeout, signal, onStdout, onStderr } = options;
 
-  if (!isJailRunning(jailName)) {
+  if (!(await isJailRunningAsync(jailName))) {
     throw new Error(`Jail ${jailName} is not running`);
   }
 
@@ -1589,7 +1602,7 @@ export async function stopJail(groupId: string): Promise<void> {
   const sudoExec = getSudoExec();
   const jailName = getJailName(groupId);
 
-  if (!isJailRunning(jailName)) {
+  if (!(await isJailRunningAsync(jailName))) {
     logger.debug({ jailName, groupId }, 'Jail not running');
     return;
   }
@@ -1646,7 +1659,7 @@ async function forceCleanup(
   const errors = [];
 
   // 1. Kill all processes in jail (if still running)
-  if (isJailRunning(jailName)) {
+  if (await isJailRunningAsync(jailName)) {
     try {
       await sudoExec(['jexec', jailName, 'kill', '-9', '-1'], {
         timeout: JAIL_QUICK_OP_TIMEOUT,
@@ -1799,12 +1812,12 @@ export async function cleanupJail(
 
   try {
     // Stop jail if running (with retry)
-    if (isJailRunning(jailName)) {
+    if (await isJailRunningAsync(jailName)) {
       try {
         await retryWithBackoff(
           async () => {
             await stopJail(groupId);
-            if (isJailRunning(jailName)) {
+            if (await isJailRunningAsync(jailName)) {
               throw new Error('Jail still running after stop');
             }
           },
