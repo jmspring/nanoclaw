@@ -1,4 +1,3 @@
-import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import pino from 'pino';
@@ -29,10 +28,12 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
+  cleanupAllContainers,
   cleanupOrphans,
   ensureContainerRuntimeRunning,
-  getRuntime,
   PROXY_BIND_HOST,
+  reconnectToRunningContainers,
+  startRuntimeMetrics,
 } from './container-runtime.js';
 import {
   getAllChats,
@@ -64,7 +65,6 @@ import {
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger, generateTraceId, createTracedLogger } from './logger.js';
-import { startMetricsServer, updateMetrics } from './metrics.js';
 import { cleanupAllGroupLogs, closeAllLogStreams } from './log-rotation.js';
 
 // Re-export for backwards compatibility during refactor
@@ -177,39 +177,6 @@ function restoreSessionState(): void {
     );
   } catch (err) {
     logger.warn({ err }, 'Failed to restore session state, starting fresh');
-  }
-}
-
-/**
- * Reconnect to existing running jails after a restart.
- * If jails are still running (e.g., after a graceful shutdown that preserved them),
- * track them in the active jails set so they won't be cleaned up as orphans.
- */
-async function reconnectToRunningJails(): Promise<void> {
-  if (getRuntime() !== 'jail') {
-    return;
-  }
-
-  try {
-    const jailRuntime = await import('./jail-runtime.js');
-    const runningJails = jailRuntime.listRunningNanoclawJails();
-
-    if (runningJails.length === 0) {
-      logger.debug('No running jails found to reconnect');
-      return;
-    }
-
-    // Track all running jails so cleanupOrphans won't kill them immediately
-    for (const jailName of runningJails) {
-      jailRuntime.trackActiveJail(jailName);
-    }
-
-    logger.info(
-      { count: runningJails.length, jails: runningJails },
-      'Reconnected to existing running jails',
-    );
-  } catch (err) {
-    logger.warn({ err }, 'Failed to reconnect to running jails');
   }
 }
 
@@ -618,12 +585,7 @@ function recoverPendingMessages(): void {
 
 async function ensureContainerSystemRunning(): Promise<void> {
   ensureContainerRuntimeRunning();
-  if (getRuntime() === 'jail') {
-    const jailRuntime = await import('./jail-runtime.js');
-    jailRuntime.cleanupOrphans();
-  } else {
-    cleanupOrphans();
-  }
+  cleanupOrphans();
 }
 
 async function main(): Promise<void> {
@@ -632,8 +594,8 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
-  // Reconnect to any jails that survived a restart
-  await reconnectToRunningJails();
+  // Reconnect to any containers/jails that survived a restart
+  await reconnectToRunningContainers();
 
   // Start credential proxy (containers route API calls through this)
   const proxyServer = await startCredentialProxy(
@@ -641,44 +603,12 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
-  // Start health/metrics server (jail runtime only)
-  let metricsServer: ReturnType<typeof startMetricsServer> = null;
-  if (getRuntime() === 'jail') {
-    const jailRuntime = await import('./jail-runtime.js');
-    // Verify pf is loaded when using restricted network mode
-    if (jailRuntime.JAIL_CONFIG.networkMode === 'restricted') {
-      try {
-        execFileSync('pfctl', ['-s', 'info'], { stdio: 'pipe' });
-      } catch {
-        logger.warn(
-          'pf firewall does not appear to be running. Restricted network mode requires pf rules for jail connectivity. See docs/FREEBSD_JAILS.md.',
-        );
-      }
-    }
-
-    metricsServer = startMetricsServer(
-      {
-        healthEnabled: HEALTH_ENABLED,
-        metricsEnabled: METRICS_ENABLED,
-        port: METRICS_PORT,
-      },
-      jailRuntime.JAIL_CONFIG.templateDataset,
-      jailRuntime.JAIL_CONFIG.templateSnapshot,
-      jailRuntime.JAIL_CONFIG.jailsDataset.split('/')[0], // Extract pool name (e.g., zroot)
-      jailRuntime.JAIL_CONFIG.jailsPath,
-    );
-
-    // Update metrics every 30 seconds
-    if (METRICS_ENABLED) {
-      setInterval(async () => {
-        await updateMetrics(
-          jailRuntime.getActiveJailCount,
-          jailRuntime.getEpairMetrics,
-          jailRuntime.JAIL_CONFIG.jailsDataset.split('/')[0],
-        );
-      }, 30000);
-    }
-  }
+  // Start health/metrics server (runtime-specific, e.g. jail ZFS/pf checks)
+  const runtimeMetrics = await startRuntimeMetrics({
+    healthEnabled: HEALTH_ENABLED,
+    metricsEnabled: METRICS_ENABLED,
+    metricsPort: METRICS_PORT,
+  });
 
   // Graceful shutdown handlers
   let shuttingDown = false;
@@ -691,19 +621,12 @@ async function main(): Promise<void> {
     saveSessionState();
 
     proxyServer.close();
-    if (metricsServer) metricsServer.close();
+    if (runtimeMetrics) runtimeMetrics.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
 
-    // Clean up jails if using jail runtime
-    if (getRuntime() === 'jail') {
-      try {
-        const jailRuntime = await import('./jail-runtime.js');
-        await jailRuntime.cleanupAllJails();
-      } catch (err) {
-        logger.warn({ err }, 'Failed to clean up jails during shutdown');
-      }
-    }
+    // Clean up containers/jails
+    await cleanupAllContainers();
 
     // Close all rotating log streams
     try {
@@ -830,58 +753,9 @@ async function main(): Promise<void> {
   // Wire up admin alerting for agent failure tracking
   adminAlertFn = sendAdminAlert;
 
-  // Periodic health check for admin alerting (every 5 minutes)
-  let alertCheckInterval: ReturnType<typeof setInterval> | null = null;
-  if (getRuntime() === 'jail') {
-    alertCheckInterval = setInterval(async () => {
-      try {
-        const jailRuntime = await import('./jail-runtime.js');
-        const poolName = jailRuntime.JAIL_CONFIG.jailsDataset.split('/')[0];
-
-        // Check ZFS pool space
-        try {
-          const availOutput = execFileSync(
-            'zfs',
-            ['get', '-Hp', '-o', 'value', 'available', poolName],
-            { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
-          );
-          const usedOutput = execFileSync(
-            'zfs',
-            ['get', '-Hp', '-o', 'value', 'used', poolName],
-            { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
-          );
-          const avail = parseInt(availOutput.trim(), 10);
-          const used = parseInt(usedOutput.trim(), 10);
-          if (avail > 0 && used > 0) {
-            const pctAvail = (avail / (avail + used)) * 100;
-            if (pctAvail < 10) {
-              sendAdminAlert(
-                `ZFS pool "${poolName}" is low on space: ${pctAvail.toFixed(1)}% free (${Math.round(avail / 1024 / 1024)}MB available).`,
-              );
-            }
-          }
-        } catch {
-          // ZFS check failed — skip
-        }
-
-        // Check template snapshot exists
-        const snapshot = `${jailRuntime.JAIL_CONFIG.templateDataset}@${jailRuntime.JAIL_CONFIG.templateSnapshot}`;
-        try {
-          execFileSync('zfs', ['list', '-t', 'snapshot', '-H', snapshot], {
-            stdio: 'pipe',
-            timeout: 5000,
-          });
-        } catch {
-          sendAdminAlert(
-            `Template snapshot missing: ${snapshot}. New jails cannot be created.`,
-          );
-        }
-      } catch (err) {
-        logger.debug({ err }, 'Admin alert health check failed');
-      }
-    }, 5 * 60 * 1000);
-
-  }
+  // Periodic runtime health checks (ZFS space, template snapshot — jail only)
+  const { startRuntimeHealthChecks } = await import('./container-runtime.js');
+  const stopHealthChecks = startRuntimeHealthChecks(sendAdminAlert);
 
   // Periodic session state save (runs every 5 minutes for crash recovery)
   const sessionSaveInterval = setInterval(
@@ -911,7 +785,7 @@ async function main(): Promise<void> {
   // Clean up on shutdown
   const originalShutdown = shutdown;
   const shutdownWithCleanup = async (signal: string) => {
-    if (alertCheckInterval) clearInterval(alertCheckInterval);
+    if (stopHealthChecks) stopHealthChecks();
     clearInterval(sessionSaveInterval);
     clearInterval(logCleanupInterval);
     clearInterval(dbBackupInterval);

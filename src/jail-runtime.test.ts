@@ -32,7 +32,7 @@ import {
   stopJail,
   type SudoExecutor,
   type SudoExecutorSync,
-} from './jail-runtime.js';
+} from './jail/index.js';
 
 describe('jail-runtime dependency injection', () => {
   let mockSudoExec: ReturnType<typeof vi.fn>;
