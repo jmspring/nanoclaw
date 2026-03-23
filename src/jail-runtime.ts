@@ -16,6 +16,7 @@ import {
   JAIL_FORCE_STOP_TIMEOUT,
   JAIL_QUICK_OP_TIMEOUT,
 } from './config.js';
+import { registerJailToken, revokeJailToken } from './credential-proxy.js';
 
 /** Jail mount specification */
 export interface JailMount {
@@ -179,6 +180,14 @@ const MAX_CONCURRENT_JAILS = parseInt(
 
 /** Track active jails */
 const activeJails = new Set<string>();
+
+/** Map groupId -> credential proxy token for per-jail auth */
+const jailTokens = new Map<string, string>();
+
+/** Get the credential proxy token for a jail. */
+export function getJailToken(groupId: string): string | undefined {
+  return jailTokens.get(groupId);
+}
 
 /** Path to persistent epair state file */
 const EPAIR_STATE_FILE = '/var/run/nanoclaw/epairs.json';
@@ -1332,6 +1341,11 @@ export async function createJail(
     // Track active jail
     activeJails.add(groupId);
 
+    // Generate per-jail credential proxy token
+    const jailToken = crypto.randomUUID();
+    jailTokens.set(groupId, jailToken);
+    registerJailToken(jailToken);
+
     log.info(
       {
         jailName,
@@ -1956,6 +1970,13 @@ export async function cleanupJail(
     } else {
       logger.info({ jailName, groupId }, 'Jail cleanup completed successfully');
       logCleanupAudit('CLEANUP_END', jailName, 'SUCCESS');
+    }
+
+    // Revoke credential proxy token
+    const token = jailTokens.get(groupId);
+    if (token) {
+      revokeJailToken(token);
+      jailTokens.delete(groupId);
     }
 
     // Remove from active jails tracking

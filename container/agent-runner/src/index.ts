@@ -487,6 +487,17 @@ async function main(): Promise<void> {
   // No real secrets exist in the container environment.
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
 
+  // Inject per-jail auth token into all requests to the credential proxy
+  const jailToken = process.env.CREDENTIAL_PROXY_TOKEN;
+  if (jailToken) {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      headers.set('x-jail-token', jailToken);
+      return originalFetch(input, { ...init, headers });
+    };
+  }
+
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 

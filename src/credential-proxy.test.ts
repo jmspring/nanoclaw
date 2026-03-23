@@ -11,7 +11,7 @@ vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 
-import { startCredentialProxy, isAllowedSource } from './credential-proxy.js';
+import { startCredentialProxy, isAllowedSource, registerJailToken, revokeJailToken } from './credential-proxy.js';
 
 function makeRequest(
   port: number,
@@ -260,5 +260,104 @@ describe('credential-proxy', () => {
 
     expect(res.statusCode).toBe(403);
     expect(res.body).toBe('Forbidden');
+  });
+
+  it('rejects requests with missing jail token when tokens are registered', async () => {
+    const token = 'valid-jail-token-123';
+    registerJailToken(token);
+    try {
+      proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+      const res = await makeRequest(
+        proxyPort,
+        {
+          method: 'POST',
+          path: '/v1/messages',
+          headers: { 'content-type': 'application/json' },
+        },
+        '{}',
+      );
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body).toBe('Forbidden');
+    } finally {
+      revokeJailToken(token);
+    }
+  });
+
+  it('rejects requests with invalid jail token', async () => {
+    const token = 'valid-jail-token-456';
+    registerJailToken(token);
+    try {
+      proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+      const res = await makeRequest(
+        proxyPort,
+        {
+          method: 'POST',
+          path: '/v1/messages',
+          headers: {
+            'content-type': 'application/json',
+            'x-jail-token': 'wrong-token',
+          },
+        },
+        '{}',
+      );
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body).toBe('Forbidden');
+    } finally {
+      revokeJailToken(token);
+    }
+  });
+
+  it('allows requests with valid jail token', async () => {
+    const token = 'valid-jail-token-789';
+    registerJailToken(token);
+    try {
+      proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+      const res = await makeRequest(
+        proxyPort,
+        {
+          method: 'POST',
+          path: '/v1/messages',
+          headers: {
+            'content-type': 'application/json',
+            'x-jail-token': token,
+          },
+        },
+        '{}',
+      );
+
+      expect(res.statusCode).toBe(200);
+    } finally {
+      revokeJailToken(token);
+    }
+  });
+
+  it('does not forward x-jail-token header upstream', async () => {
+    const token = 'valid-jail-token-upstream';
+    registerJailToken(token);
+    try {
+      proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+      await makeRequest(
+        proxyPort,
+        {
+          method: 'POST',
+          path: '/v1/messages',
+          headers: {
+            'content-type': 'application/json',
+            'x-jail-token': token,
+          },
+        },
+        '{}',
+      );
+
+      expect(lastUpstreamHeaders['x-jail-token']).toBeUndefined();
+    } finally {
+      revokeJailToken(token);
+    }
   });
 });

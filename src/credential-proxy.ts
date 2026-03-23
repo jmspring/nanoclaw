@@ -46,6 +46,17 @@ export function isAllowedSource(remoteAddr: string | undefined): boolean {
   return addr === '127.0.0.1' || addr === '::1';
 }
 
+/** Set of valid per-jail tokens. Tokens are added on jail creation and removed on destruction. */
+const validTokens = new Set<string>();
+
+export function registerJailToken(token: string): void {
+  validTokens.add(token);
+}
+
+export function revokeJailToken(token: string): void {
+  validTokens.delete(token);
+}
+
 export function startCredentialProxy(
   port: number,
   host = '127.0.0.1',
@@ -77,6 +88,17 @@ export function startCredentialProxy(
         return;
       }
 
+      // Per-jail token authentication (skip if no tokens registered, e.g. Docker mode)
+      if (validTokens.size > 0) {
+        const token = req.headers['x-jail-token'] as string | undefined;
+        if (!token || !validTokens.has(token)) {
+          logger.warn({ remoteAddr, url: req.url }, 'Credential proxy: invalid or missing jail token');
+          res.writeHead(403);
+          res.end('Forbidden');
+          return;
+        }
+      }
+
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
@@ -88,10 +110,11 @@ export function startCredentialProxy(
             'content-length': body.length,
           };
 
-        // Strip hop-by-hop headers that must not be forwarded by proxies
+        // Strip hop-by-hop and internal headers that must not be forwarded
         delete headers['connection'];
         delete headers['keep-alive'];
         delete headers['transfer-encoding'];
+        delete headers['x-jail-token'];
 
         if (authMode === 'api-key') {
           // API key mode: inject x-api-key on every request
