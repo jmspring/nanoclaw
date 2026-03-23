@@ -123,6 +123,113 @@ ls -la store/auth/
 npm run auth
 ```
 
+## FreeBSD Jails (NANOCLAW_RUNTIME=jail)
+
+### Quick Status Check (Jails)
+
+```bash
+# 1. Is the NanoClaw process running?
+pgrep -f 'dist/index.js'
+
+# 2. List running jails
+sudo jls -N | grep nanoclaw_
+
+# 3. Recent errors in service log?
+grep -E 'FATAL|ERROR' logs/nanoclaw.log | tail -20
+
+# 4. Check ZFS pool space
+zfs list -o name,used,avail,refer zroot/nanoclaw
+
+# 5. Verify template snapshot exists
+zfs list -t snapshot zroot/nanoclaw/jails/template@base
+
+# 6. Are groups loaded?
+grep 'groupCount' logs/nanoclaw.log | tail -3
+```
+
+### Jail Networking (Restricted Mode)
+
+```bash
+# Check active network connections from jails
+sudo pfctl -s state | grep 10.99
+
+# List pf firewall rules
+sudo pfctl -s rules
+
+# View NAT rules
+sudo pfctl -s nat
+
+# Watch blocked packets in real time
+sudo tcpdump -n -e -ttt -i pflog0
+
+# List active epair interfaces
+ifconfig -l | tr ' ' '\n' | grep epair
+
+# Check IP forwarding is enabled
+sysctl net.inet.ip.forwarding
+
+# Verify Anthropic API IPs in pf table
+sudo pfctl -t anthropic_api -T show
+```
+
+### Jail Logs and Storage
+
+```bash
+# Check jail-specific agent logs
+ls -lt groups/*/logs/jail-*.log | head -10
+
+# Read the most recent jail log (replace group name)
+cat groups/<group>/logs/jail-*.log | tail -50
+
+# Check ZFS dataset usage per jail
+zfs list -r -o name,used,refer zroot/nanoclaw/jails | sort -k2 -h
+
+# Check for orphaned ZFS datasets (jails without running processes)
+zfs list -r zroot/nanoclaw/jails | grep -v template
+
+# Check cleanup audit log
+tail -20 jails/cleanup-audit.log
+```
+
+### Jail Mount Issues
+
+```bash
+# List all nullfs mounts for a jail
+mount | grep nanoclaw_
+
+# Check devfs is mounted in a running jail
+sudo jexec <jailname> ls -la /dev
+
+# Verify mount points exist inside jail clone
+ls /path/to/jail/workspace/project /path/to/jail/workspace/group /path/to/jail/workspace/ipc
+```
+
+### Orphaned Jails and Cleanup
+
+```bash
+# Find orphaned jails (running jails with no NanoClaw process managing them)
+sudo jls -N | grep nanoclaw_
+
+# Stop an orphaned jail
+sudo jail -r nanoclaw_<groupname>
+
+# Force unmount all filesystems for a jail
+sudo umount -f /path/to/jail/dev
+sudo umount -f /path/to/jail/workspace/project
+sudo umount -f /path/to/jail/workspace/group
+sudo umount -f /path/to/jail/workspace/ipc
+sudo umount -f /path/to/jail/home/node/.claude
+sudo umount -f /path/to/jail/app/src
+
+# Destroy the orphaned ZFS dataset
+sudo zfs destroy -r zroot/nanoclaw/jails/nanoclaw_<groupname>
+
+# Check for leaked epair interfaces (should match running jails)
+ifconfig -l | tr ' ' '\n' | grep epair
+```
+
+See [FreeBSD Jails Troubleshooting](FREEBSD_JAILS.md#8-troubleshooting) for full recovery procedures.
+
 ## Service Management
 
 ```bash
