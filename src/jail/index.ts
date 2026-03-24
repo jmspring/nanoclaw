@@ -31,7 +31,11 @@ export type {
 } from './types.js';
 
 // Config
-export { JAIL_CONFIG, JAIL_MOUNT_LAYOUT, MAX_CONCURRENT_JAILS } from './config.js';
+export {
+  JAIL_CONFIG, JAIL_MOUNT_LAYOUT, MAX_CONCURRENT_JAILS,
+  JAIL_EXEC_TIMEOUT, JAIL_CREATE_TIMEOUT, JAIL_STOP_TIMEOUT,
+  JAIL_FORCE_STOP_TIMEOUT, JAIL_QUICK_OP_TIMEOUT,
+} from './config.js';
 
 // Sudo / DI
 export { setJailRuntimeDeps, resetJailRuntimeDeps } from './sudo.js';
@@ -81,5 +85,149 @@ export {
   ensureJailRuntimeRunning,
 } from './cleanup.js';
 
+// Metrics
+export {
+  startMetricsServer,
+  updateMetrics,
+  incrementJailCreateCounter,
+  setActiveJailCount,
+  setEpairUsed,
+  setZfsPoolBytesAvail,
+} from './metrics.js';
+
 // Runner
 export { runJailAgent } from './runner.js';
+
+// ── Runtime hooks (called by index.ts when runtime === 'jail') ──
+
+import { execFileSync } from 'child_process';
+import { logger } from '../logger.js';
+import { JAIL_CONFIG } from './config.js';
+import {
+  getActiveJailCount,
+  trackActiveJail,
+} from './lifecycle.js';
+import { getEpairMetrics } from './network.js';
+import { listRunningNanoclawJails, cleanupAllJails } from './cleanup.js';
+import { startMetricsServer, updateMetrics } from './metrics.js';
+
+/** Reconnect to jails that survived a process restart. */
+export async function reconnectToRunningJails(): Promise<void> {
+  try {
+    const running = listRunningNanoclawJails();
+    if (running.length === 0) {
+      logger.debug('No running jails found to reconnect');
+      return;
+    }
+    for (const name of running) {
+      trackActiveJail(name);
+    }
+    logger.info({ count: running.length, jails: running }, 'Reconnected to existing running jails');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to reconnect to running jails');
+  }
+}
+
+/** Clean up all jails during shutdown. */
+export async function shutdownAllJails(): Promise<void> {
+  try {
+    await cleanupAllJails();
+  } catch (err) {
+    logger.warn({ err }, 'Failed to clean up jails during shutdown');
+  }
+}
+
+/** Start the jail-specific health/metrics HTTP server. */
+export async function startJailMetrics(config: {
+  healthEnabled: boolean;
+  metricsEnabled: boolean;
+  metricsPort: number;
+}): Promise<{ close: () => void } | null> {
+  // Verify pf is loaded when using restricted network mode
+  if (JAIL_CONFIG.networkMode === 'restricted') {
+    try {
+      execFileSync('pfctl', ['-s', 'info'], { stdio: 'pipe' });
+    } catch {
+      logger.warn(
+        'pf firewall does not appear to be running. Restricted network mode requires pf rules for jail connectivity. See docs/FREEBSD_JAILS.md.',
+      );
+    }
+  }
+
+  const poolName = JAIL_CONFIG.jailsDataset.split('/')[0];
+  const server = startMetricsServer(
+    {
+      healthEnabled: config.healthEnabled,
+      metricsEnabled: config.metricsEnabled,
+      port: config.metricsPort,
+    },
+    JAIL_CONFIG.templateDataset,
+    JAIL_CONFIG.templateSnapshot,
+    poolName,
+    JAIL_CONFIG.jailsPath,
+  );
+
+  let metricsInterval: ReturnType<typeof setInterval> | null = null;
+  if (config.metricsEnabled) {
+    metricsInterval = setInterval(async () => {
+      await updateMetrics(getActiveJailCount, getEpairMetrics, poolName);
+    }, 30000);
+  }
+
+  return {
+    close: () => {
+      if (metricsInterval) clearInterval(metricsInterval);
+      server?.close();
+    },
+  };
+}
+
+/** Periodic ZFS/template health checks. Calls onAlert on critical conditions. */
+export function startJailHealthChecks(
+  onAlert: (message: string) => void,
+): () => void {
+  const interval = setInterval(async () => {
+    try {
+      const poolName = JAIL_CONFIG.jailsDataset.split('/')[0];
+
+      // Check ZFS pool space
+      try {
+        const availOutput = execFileSync(
+          'zfs', ['get', '-Hp', '-o', 'value', 'available', poolName],
+          { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
+        );
+        const usedOutput = execFileSync(
+          'zfs', ['get', '-Hp', '-o', 'value', 'used', poolName],
+          { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
+        );
+        const avail = parseInt(availOutput.trim(), 10);
+        const used = parseInt(usedOutput.trim(), 10);
+        if (avail > 0 && used > 0) {
+          const pctAvail = (avail / (avail + used)) * 100;
+          if (pctAvail < 10) {
+            onAlert(
+              `ZFS pool "${poolName}" is low on space: ${pctAvail.toFixed(1)}% free (${Math.round(avail / 1024 / 1024)}MB available).`,
+            );
+          }
+        }
+      } catch {
+        // ZFS check failed — skip
+      }
+
+      // Check template snapshot exists
+      const snapshot = `${JAIL_CONFIG.templateDataset}@${JAIL_CONFIG.templateSnapshot}`;
+      try {
+        execFileSync('zfs', ['list', '-t', 'snapshot', '-H', snapshot], {
+          stdio: 'pipe',
+          timeout: 5000,
+        });
+      } catch {
+        onAlert(`Template snapshot missing: ${snapshot}. New jails cannot be created.`);
+      }
+    } catch (err) {
+      logger.debug({ err }, 'Runtime health check failed');
+    }
+  }, 5 * 60 * 1000);
+
+  return () => clearInterval(interval);
+}

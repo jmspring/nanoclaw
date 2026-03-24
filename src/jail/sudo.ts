@@ -2,7 +2,7 @@
  * Sudo execution helpers with dependency injection for testing.
  */
 import { execFile, execFileSync } from 'child_process';
-import { JAIL_EXEC_TIMEOUT } from '../config.js';
+import { JAIL_EXEC_TIMEOUT } from './config.js';
 import type {
   JailRuntimeDeps,
   SudoExecutor,

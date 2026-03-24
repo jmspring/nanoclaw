@@ -95,20 +95,3 @@ export const LOG_ROTATION_COMPRESS =
 export const LOG_RETENTION_DAYS = clampInt(
   process.env.LOG_RETENTION_DAYS, 30, 1, 365,
 );
-
-// Jail runtime timeout configuration (in milliseconds)
-export const JAIL_EXEC_TIMEOUT = clampInt(
-  process.env.JAIL_EXEC_TIMEOUT, 30000, 5000, 300000,
-); // Default 30s, min 5s, max 5min
-export const JAIL_CREATE_TIMEOUT = clampInt(
-  process.env.JAIL_CREATE_TIMEOUT, 30000, 5000, 300000,
-); // Default 30s, min 5s, max 5min
-export const JAIL_STOP_TIMEOUT = clampInt(
-  process.env.JAIL_STOP_TIMEOUT, 15000, 5000, 120000,
-); // Default 15s, min 5s, max 2min
-export const JAIL_FORCE_STOP_TIMEOUT = clampInt(
-  process.env.JAIL_FORCE_STOP_TIMEOUT, 10000, 5000, 60000,
-); // Default 10s, min 5s, max 1min
-export const JAIL_QUICK_OP_TIMEOUT = clampInt(
-  process.env.JAIL_QUICK_OP_TIMEOUT, 5000, 1000, 30000,
-); // Default 5s, min 1s, max 30s

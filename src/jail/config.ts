@@ -5,6 +5,29 @@ import path from 'path';
 import { logger } from '../logger.js';
 import type { JailConfig } from './types.js';
 
+/** Clamp a parsed integer to [min, max], falling back to defaultVal on NaN */
+function clampInt(raw: string | undefined, defaultVal: number, min: number, max: number): number {
+  const parsed = parseInt(raw || String(defaultVal), 10);
+  return Math.min(max, Math.max(min, isNaN(parsed) ? defaultVal : parsed));
+}
+
+// Jail runtime timeout configuration (in milliseconds)
+export const JAIL_EXEC_TIMEOUT = clampInt(
+  process.env.JAIL_EXEC_TIMEOUT, 30000, 5000, 300000,
+);
+export const JAIL_CREATE_TIMEOUT = clampInt(
+  process.env.JAIL_CREATE_TIMEOUT, 30000, 5000, 300000,
+);
+export const JAIL_STOP_TIMEOUT = clampInt(
+  process.env.JAIL_STOP_TIMEOUT, 15000, 5000, 120000,
+);
+export const JAIL_FORCE_STOP_TIMEOUT = clampInt(
+  process.env.JAIL_FORCE_STOP_TIMEOUT, 10000, 5000, 60000,
+);
+export const JAIL_QUICK_OP_TIMEOUT = clampInt(
+  process.env.JAIL_QUICK_OP_TIMEOUT, 5000, 1000, 30000,
+);
+
 /** Root path for NanoClaw data — override via NANOCLAW_ROOT env var */
 const NANOCLAW_ROOT = process.env.NANOCLAW_ROOT || process.cwd();
 

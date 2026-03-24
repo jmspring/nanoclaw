@@ -28,12 +28,10 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
-  cleanupAllContainers,
   cleanupOrphans,
   ensureContainerRuntimeRunning,
+  getRuntime,
   PROXY_BIND_HOST,
-  reconnectToRunningContainers,
-  startRuntimeMetrics,
 } from './container-runtime.js';
 import {
   getAllChats,
@@ -594,21 +592,23 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
-  // Reconnect to any containers/jails that survived a restart
-  await reconnectToRunningContainers();
+  // Reconnect to any jails that survived a restart
+  let runtimeMetrics: { close: () => void } | null = null;
+  if (getRuntime() === 'jail') {
+    const jail = await import('./jail/index.js');
+    await jail.reconnectToRunningJails();
+    runtimeMetrics = await jail.startJailMetrics({
+      healthEnabled: HEALTH_ENABLED,
+      metricsEnabled: METRICS_ENABLED,
+      metricsPort: METRICS_PORT,
+    });
+  }
 
   // Start credential proxy (containers route API calls through this)
   const proxyServer = await startCredentialProxy(
     CREDENTIAL_PROXY_PORT,
     PROXY_BIND_HOST,
   );
-
-  // Start health/metrics server (runtime-specific, e.g. jail ZFS/pf checks)
-  const runtimeMetrics = await startRuntimeMetrics({
-    healthEnabled: HEALTH_ENABLED,
-    metricsEnabled: METRICS_ENABLED,
-    metricsPort: METRICS_PORT,
-  });
 
   // Graceful shutdown handlers
   let shuttingDown = false;
@@ -625,8 +625,11 @@ async function main(): Promise<void> {
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
 
-    // Clean up containers/jails
-    await cleanupAllContainers();
+    // Clean up jails (no-op for Docker/Apple — containers use --rm)
+    if (getRuntime() === 'jail') {
+      const jail = await import('./jail/index.js');
+      await jail.shutdownAllJails();
+    }
 
     // Close all rotating log streams
     try {
@@ -754,8 +757,11 @@ async function main(): Promise<void> {
   adminAlertFn = sendAdminAlert;
 
   // Periodic runtime health checks (ZFS space, template snapshot — jail only)
-  const { startRuntimeHealthChecks } = await import('./container-runtime.js');
-  const stopHealthChecks = startRuntimeHealthChecks(sendAdminAlert);
+  let stopHealthChecks: (() => void) | null = null;
+  if (getRuntime() === 'jail') {
+    const jail = await import('./jail/index.js');
+    stopHealthChecks = jail.startJailHealthChecks(sendAdminAlert);
+  }
 
   // Periodic session state save (runs every 5 minutes for crash recovery)
   const sessionSaveInterval = setInterval(
