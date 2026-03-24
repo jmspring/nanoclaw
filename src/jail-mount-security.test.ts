@@ -6,8 +6,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { buildJailMounts } from './jail/index.js';
-import type { JailMountPaths } from './jail/index.js';
+import { buildJailMounts } from './jail/mounts.js';
+import type { JailMountPaths } from './jail/types.js';
 
 describe('Jail Mount Security', () => {
   let testDir: string;

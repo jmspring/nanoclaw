@@ -177,7 +177,8 @@ export async function runJailAgent(
   const startTime = Date.now();
   const log = tracedLogger || logger;
 
-  const jailRuntime = await import('./index.js');
+  const { JAIL_CONFIG: jailConfig } = await import('./config.js');
+  const jailLifecycle = await import('./lifecycle.js');
 
   const mountPaths = buildJailMountPaths(group, input.isMain);
 
@@ -185,7 +186,7 @@ export async function runJailAgent(
     TZ: TIMEZONE,
     HOME: '/home/node',
     PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-    ANTHROPIC_BASE_URL: `http://${jailRuntime.JAIL_CONFIG.jailHostIP}:${CREDENTIAL_PROXY_PORT}`,
+    ANTHROPIC_BASE_URL: `http://${jailConfig.jailHostIP}:${CREDENTIAL_PROXY_PORT}`,
   };
 
   env.ALLOWED_TOOLS = getAllowedTools(input.isMain).join(',');
@@ -209,7 +210,7 @@ export async function runJailAgent(
     readonly: boolean;
   }>;
   try {
-    const result = await jailRuntime.createJailWithPaths(
+    const result = await jailLifecycle.createJailWithPaths(
       group.folder,
       mountPaths,
       traceId,
@@ -218,10 +219,10 @@ export async function runJailAgent(
     jailName = result.jailName;
     jailMounts = result.mounts;
 
-    jailRuntime.trackJailTempFile(group.folder, '/tmp/dist');
-    jailRuntime.trackJailTempFile(group.folder, '/tmp/input.json');
+    jailLifecycle.trackJailTempFile(group.folder, '/tmp/dist');
+    jailLifecycle.trackJailTempFile(group.folder, '/tmp/input.json');
 
-    const jailToken = jailRuntime.getJailToken(group.folder);
+    const jailToken = jailLifecycle.getJailToken(group.folder);
     if (jailToken) {
       env.CREDENTIAL_PROXY_TOKEN = jailToken;
     }
@@ -248,7 +249,7 @@ export async function runJailAgent(
         exec node /tmp/dist/index.js < /tmp/input.json
       fi
     `;
-    const proc = jailRuntime.spawnInJail(
+    const proc = jailLifecycle.spawnInJail(
       group.folder,
       ['sh', '-c', entrypointScript],
       { env },
@@ -277,7 +278,7 @@ export async function runJailAgent(
       timedOut = true;
       log.error({ group: group.name, jailName }, 'Jail timeout, stopping');
       try {
-        await jailRuntime.stopJail(group.folder);
+        await jailLifecycle.stopJail(group.folder);
       } catch (err) {
         log.warn({ group: group.name, err }, 'Failed to stop jail');
         proc.kill('SIGKILL');
@@ -363,7 +364,7 @@ export async function runJailAgent(
       const duration = Date.now() - startTime;
 
       try {
-        await jailRuntime.destroyJail(group.folder, jailMounts);
+        await jailLifecycle.destroyJail(group.folder, jailMounts);
       } catch (err) {
         log.warn({ group: group.name, err }, 'Failed to destroy jail');
       }
@@ -556,7 +557,7 @@ export async function runJailAgent(
       );
 
       try {
-        await jailRuntime.destroyJail(group.folder, jailMounts);
+        await jailLifecycle.destroyJail(group.folder, jailMounts);
       } catch (cleanupErr) {
         log.warn(
           { group: group.name, cleanupErr },

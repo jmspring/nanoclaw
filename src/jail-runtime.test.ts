@@ -22,17 +22,15 @@ vi.mock('fs');
 // Mock child_process
 vi.mock('child_process');
 
+import { setJailRuntimeDeps, resetJailRuntimeDeps } from './jail/sudo.js';
 import {
-  setJailRuntimeDeps,
-  resetJailRuntimeDeps,
   isJailRunning,
   isJailRunningAsync,
   sanitizeJailName,
   getJailName,
   stopJail,
-  type SudoExecutor,
-  type SudoExecutorSync,
-} from './jail/index.js';
+} from './jail/lifecycle.js';
+import type { SudoExecutor, SudoExecutorSync } from './jail/types.js';
 
 describe('jail-runtime dependency injection', () => {
   let mockSudoExec: ReturnType<typeof vi.fn>;
