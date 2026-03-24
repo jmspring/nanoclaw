@@ -7,14 +7,14 @@ import path from 'path';
 import crypto from 'crypto';
 import pino from 'pino';
 import { logger } from '../logger.js';
+import { DATA_DIR } from '../config.js';
 import {
-  DATA_DIR,
   JAIL_EXEC_TIMEOUT,
   JAIL_CREATE_TIMEOUT,
   JAIL_STOP_TIMEOUT,
   JAIL_FORCE_STOP_TIMEOUT,
   JAIL_QUICK_OP_TIMEOUT,
-} from '../config.js';
+} from './config.js';
 import { registerJailToken, revokeJailToken } from '../credential-proxy.js';
 import { getSudoExec, getSudoExecSync } from './sudo.js';
 import { JAIL_CONFIG, MAX_CONCURRENT_JAILS } from './config.js';
@@ -362,7 +362,7 @@ ${networkConfig}
     );
 
     try {
-      const { incrementJailCreateCounter } = await import('../metrics.js');
+      const { incrementJailCreateCounter } = await import('./metrics.js');
       incrementJailCreateCounter(true);
     } catch {
       // Metrics module may not be available
@@ -370,7 +370,7 @@ ${networkConfig}
     return jailName;
   } catch (error) {
     try {
-      const { incrementJailCreateCounter } = await import('../metrics.js');
+      const { incrementJailCreateCounter } = await import('./metrics.js');
       incrementJailCreateCounter(false);
     } catch {
       // Metrics module may not be available

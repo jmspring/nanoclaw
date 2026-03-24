@@ -5,7 +5,7 @@
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import http from 'http';
-import { logger } from './logger.js';
+import { logger } from '../logger.js';
 
 /** Configuration for metrics server */
 export interface MetricsConfig {

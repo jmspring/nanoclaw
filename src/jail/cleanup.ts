@@ -5,7 +5,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { logger } from '../logger.js';
-import { JAIL_STOP_TIMEOUT, JAIL_CREATE_TIMEOUT, JAIL_QUICK_OP_TIMEOUT } from '../config.js';
+import { JAIL_STOP_TIMEOUT, JAIL_CREATE_TIMEOUT, JAIL_QUICK_OP_TIMEOUT } from './config.js';
 import { getSudoExec } from './sudo.js';
 import { JAIL_CONFIG } from './config.js';
 import {
