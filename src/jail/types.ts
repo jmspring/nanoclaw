@@ -79,6 +79,7 @@ export interface JailConfig {
   workspacesPath: string;
   ipcPath: string;
   networkMode: 'inherit' | 'restricted';
+  jailSubnet: string;
   jailHostIP: string;
   jailIP: string;
   jailNetmask: string;

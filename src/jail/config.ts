@@ -31,6 +31,9 @@ export const JAIL_QUICK_OP_TIMEOUT = clampInt(
 /** Root path for NanoClaw data — override via NANOCLAW_ROOT env var */
 const NANOCLAW_ROOT = process.env.NANOCLAW_ROOT || process.cwd();
 
+/** Jail network subnet prefix — override via NANOCLAW_JAIL_SUBNET env var (default '10.99') */
+const jailSubnet = process.env.NANOCLAW_JAIL_SUBNET || '10.99';
+
 /** Jail configuration — paths derived from NANOCLAW_ROOT with per-path overrides */
 export const JAIL_CONFIG: JailConfig = {
   templateDataset: process.env.NANOCLAW_TEMPLATE_DATASET || 'zroot/nanoclaw/jails/template',
@@ -42,8 +45,9 @@ export const JAIL_CONFIG: JailConfig = {
   networkMode:
     (process.env.NANOCLAW_JAIL_NETWORK_MODE as 'inherit' | 'restricted') ||
     'restricted',
-  jailHostIP: '10.99.0.1',
-  jailIP: '10.99.0.2',
+  jailSubnet,
+  jailHostIP: `${jailSubnet}.0.1`,
+  jailIP: `${jailSubnet}.0.2`,
   jailNetmask: '30',
   resourceLimits: {
     memoryuse: process.env.NANOCLAW_JAIL_MEMORY_LIMIT || '2G',

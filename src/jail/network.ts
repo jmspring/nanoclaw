@@ -138,8 +138,8 @@ export async function createEpair(groupId: string): Promise<EpairInfo> {
 
   const hostIface = `epair${epairNum}a`;
   const jailIface = `epair${epairNum}b`;
-  const hostIP = `10.99.${epairNum}.1`;
-  const jailIP = `10.99.${epairNum}.2`;
+  const hostIP = `${JAIL_CONFIG.jailSubnet}.${epairNum}.1`;
+  const jailIP = `${JAIL_CONFIG.jailSubnet}.${epairNum}.2`;
   const netmask = '30';
 
   await sudoExec(['ifconfig', hostIface, `${hostIP}/${netmask}`, 'up']);
@@ -262,7 +262,7 @@ export function validatePfConfiguration(): void {
       encoding: 'utf-8',
     });
 
-    if (!natRules.includes('10.99.0.0/24')) {
+    if (!natRules.includes(`${JAIL_CONFIG.jailSubnet}.`)) {
       throw new Error(
         'NETWORK MODE MISMATCH: Network mode is "restricted" but pf NAT rules for jail network not found.\n' +
           'To fix this issue:\n' +

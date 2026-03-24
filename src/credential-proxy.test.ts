@@ -50,21 +50,33 @@ function makeRequest(
 }
 
 describe('isAllowedSource', () => {
-  const originalEnv = process.env.NANOCLAW_JAIL_NETWORK_MODE;
+  const originalNetworkMode = process.env.NANOCLAW_JAIL_NETWORK_MODE;
+  const originalSubnet = process.env.NANOCLAW_JAIL_SUBNET;
 
   afterEach(() => {
-    if (originalEnv === undefined) {
+    if (originalNetworkMode === undefined) {
       delete process.env.NANOCLAW_JAIL_NETWORK_MODE;
     } else {
-      process.env.NANOCLAW_JAIL_NETWORK_MODE = originalEnv;
+      process.env.NANOCLAW_JAIL_NETWORK_MODE = originalNetworkMode;
+    }
+    if (originalSubnet === undefined) {
+      delete process.env.NANOCLAW_JAIL_SUBNET;
+    } else {
+      process.env.NANOCLAW_JAIL_SUBNET = originalSubnet;
     }
   });
 
-  it('restricted mode allows 10.99.0.x addresses', () => {
+  it('restricted mode allows all jail subnet addresses', () => {
     process.env.NANOCLAW_JAIL_NETWORK_MODE = 'restricted';
+    // epair 0: 10.99.0.2
     expect(isAllowedSource('10.99.0.2')).toBe(true);
     expect(isAllowedSource('10.99.0.254')).toBe(true);
     expect(isAllowedSource('::ffff:10.99.0.5')).toBe(true);
+    // epair N > 0: 10.99.N.2 — previously rejected (the bug)
+    expect(isAllowedSource('10.99.1.2')).toBe(true);
+    expect(isAllowedSource('10.99.42.2')).toBe(true);
+    expect(isAllowedSource('10.99.255.1')).toBe(true);
+    expect(isAllowedSource('::ffff:10.99.5.2')).toBe(true);
   });
 
   it('restricted mode rejects localhost and other IPs', () => {
@@ -72,6 +84,16 @@ describe('isAllowedSource', () => {
     expect(isAllowedSource('127.0.0.1')).toBe(false);
     expect(isAllowedSource('::1')).toBe(false);
     expect(isAllowedSource('192.168.1.5')).toBe(false);
+  });
+
+  it('restricted mode respects custom NANOCLAW_JAIL_SUBNET', () => {
+    process.env.NANOCLAW_JAIL_NETWORK_MODE = 'restricted';
+    process.env.NANOCLAW_JAIL_SUBNET = '172.30';
+    expect(isAllowedSource('172.30.0.2')).toBe(true);
+    expect(isAllowedSource('172.30.5.2')).toBe(true);
+    // Default subnet should be rejected when custom is set
+    expect(isAllowedSource('10.99.0.2')).toBe(false);
+    delete process.env.NANOCLAW_JAIL_SUBNET;
   });
 
   it('inherit mode allows localhost', () => {
@@ -96,6 +118,7 @@ describe('isAllowedSource', () => {
     delete process.env.NANOCLAW_JAIL_NETWORK_MODE;
     expect(isAllowedSource('127.0.0.1')).toBe(false);
     expect(isAllowedSource('10.99.0.2')).toBe(true);
+    expect(isAllowedSource('10.99.5.2')).toBe(true);
   });
 });
 
