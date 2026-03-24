@@ -181,29 +181,35 @@ export function buildFstab(mounts: JailMount[], jailPath: string): string {
   return lines.join('\n') + '\n';
 }
 
+/** Validate that a mount target is within the jail root (no escapes or traversal). */
+function assertMountWithinJail(jailPath: string, mount: JailMount): string {
+  const resolvedJailRoot = path.resolve(jailPath);
+  const relativeMountPath = mount.jailPath.replace(/^\//, '');
+  const targetPath = path.resolve(jailPath, relativeMountPath);
+
+  if (
+    !targetPath.startsWith(resolvedJailRoot + path.sep) &&
+    targetPath !== resolvedJailRoot
+  ) {
+    throw new Error(`Mount target escapes jail root: ${mount.jailPath}`);
+  }
+
+  if (mount.jailPath.includes('..')) {
+    throw new Error(`Mount path contains path traversal: ${mount.jailPath}`);
+  }
+
+  return targetPath;
+}
+
 /** Create mount point directories inside the jail */
 export async function createMountPoints(
   mounts: JailMount[],
   jailPath: string,
 ): Promise<void> {
   const sudoExec = getSudoExec();
-  const resolvedJailRoot = path.resolve(jailPath);
 
   for (const mount of mounts) {
-    const relativeMountPath = mount.jailPath.replace(/^\//, '');
-    const targetPath = path.resolve(jailPath, relativeMountPath);
-
-    if (
-      !targetPath.startsWith(resolvedJailRoot + path.sep) &&
-      targetPath !== resolvedJailRoot
-    ) {
-      throw new Error(`Mount target escapes jail root: ${mount.jailPath}`);
-    }
-
-    if (mount.jailPath.includes('..')) {
-      throw new Error(`Mount path contains path traversal: ${mount.jailPath}`);
-    }
-
+    const targetPath = assertMountWithinJail(jailPath, mount);
     await sudoExec(['mkdir', '-p', targetPath]);
   }
 }
@@ -214,23 +220,9 @@ export async function mountNullfs(
   jailPath: string,
 ): Promise<void> {
   const sudoExec = getSudoExec();
-  const resolvedJailRoot = path.resolve(jailPath);
 
   for (const mount of mounts) {
-    const relativeMountPath = mount.jailPath.replace(/^\//, '');
-    const targetPath = path.resolve(jailPath, relativeMountPath);
-
-    if (
-      !targetPath.startsWith(resolvedJailRoot + path.sep) &&
-      targetPath !== resolvedJailRoot
-    ) {
-      throw new Error(`Mount target escapes jail root: ${mount.jailPath}`);
-    }
-
-    if (mount.jailPath.includes('..')) {
-      throw new Error(`Mount path contains path traversal: ${mount.jailPath}`);
-    }
-
+    const targetPath = assertMountWithinJail(jailPath, mount);
     const opts = mount.readonly ? 'ro' : 'rw';
     try {
       await sudoExec(['mount_nullfs', '-o', opts, mount.hostPath, targetPath]);
