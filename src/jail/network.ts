@@ -18,12 +18,6 @@ const assignedEpairs = new Map<string, number>();
 /** Path to persistent epair state file */
 const EPAIR_STATE_FILE = path.join(DATA_DIR, 'epairs.json');
 
-/** Epair lock directory path */
-const EPAIR_LOCK_DIR = '/tmp/nanoclaw-epair.lock';
-
-/** Track temporary files/directories created during session */
-const sessionTempFiles = new Set<string>();
-
 /**
  * Persist epair state to disk for crash recovery.
  */
@@ -104,98 +98,60 @@ export function restoreEpairState(): void {
 }
 
 /**
- * Acquire an exclusive lock for epair creation.
- */
-async function acquireEpairLock(): Promise<() => void> {
-  const maxRetries = 100;
-  const retryDelay = 50;
-
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      fs.mkdirSync(EPAIR_LOCK_DIR, { mode: 0o755 });
-      sessionTempFiles.add(EPAIR_LOCK_DIR);
-
-      return () => {
-        try {
-          fs.rmdirSync(EPAIR_LOCK_DIR);
-          sessionTempFiles.delete(EPAIR_LOCK_DIR);
-        } catch (err) {
-          logger.warn({ err, lockDir: EPAIR_LOCK_DIR }, 'Failed to release epair lock');
-        }
-      };
-    } catch (err) {
-      const nodeError = err as NodeJS.ErrnoException;
-      if (nodeError.code !== 'EEXIST') {
-        throw err;
-      }
-      await new Promise((resolve) => setTimeout(resolve, retryDelay));
-    }
-  }
-
-  throw new Error('Failed to acquire epair lock after maximum retries');
-}
-
-/**
  * Create an epair interface pair for a vnet jail.
  */
 export async function createEpair(groupId: string): Promise<EpairInfo> {
-  const unlock = await acquireEpairLock();
   const sudoExec = getSudoExec();
+  const currentCount = assignedEpairs.size;
 
-  try {
-    const currentCount = assignedEpairs.size;
-
-    if (currentCount >= MAX_EPAIRS) {
-      throw new Error(
-        `Epair pool exhausted (${currentCount}/${MAX_EPAIRS}). Wait for jails to complete.`,
-      );
-    }
-
-    if (currentCount >= MAX_EPAIRS * EPAIR_WARNING_THRESHOLD) {
-      logger.warn(
-        {
-          current: currentCount,
-          max: MAX_EPAIRS,
-          threshold: Math.floor(MAX_EPAIRS * EPAIR_WARNING_THRESHOLD),
-        },
-        'Approaching epair pool limit',
-      );
-    }
-
-    const result = await sudoExec(['ifconfig', 'epair', 'create']);
-    const epairName = result.stdout.trim();
-
-    const match = epairName.match(/epair(\d+)a/);
-    if (!match) {
-      throw new Error(`Unexpected epair name format: ${epairName}`);
-    }
-    const epairNum = parseInt(match[1], 10);
-
-    if (epairNum < 0 || epairNum > 255) {
-      throw new Error(
-        `Epair number ${epairNum} exceeds /24 pool capacity (0-255)`,
-      );
-    }
-
-    const hostIface = `epair${epairNum}a`;
-    const jailIface = `epair${epairNum}b`;
-    const hostIP = `${JAIL_CONFIG.jailSubnet}.${epairNum}.1`;
-    const jailIP = `${JAIL_CONFIG.jailSubnet}.${epairNum}.2`;
-    const netmask = '30';
-
-    await sudoExec(['ifconfig', hostIface, `${hostIP}/${netmask}`, 'up']);
-
-    assignedEpairs.set(groupId, epairNum);
-    persistEpairState();
-
-    logger.info(
-      { groupId, epairNum, hostIface, jailIface, hostIP, jailIP },
-      'Created epair',
+  if (currentCount >= MAX_EPAIRS) {
+    throw new Error(
+      `Epair pool exhausted (${currentCount}/${MAX_EPAIRS}). Wait for jails to complete.`,
     );
-    return { epairNum, hostIface, jailIface, hostIP, jailIP, netmask };
-  } finally {
-    unlock();
   }
+
+  if (currentCount >= MAX_EPAIRS * EPAIR_WARNING_THRESHOLD) {
+    logger.warn(
+      {
+        current: currentCount,
+        max: MAX_EPAIRS,
+        threshold: Math.floor(MAX_EPAIRS * EPAIR_WARNING_THRESHOLD),
+      },
+      'Approaching epair pool limit',
+    );
+  }
+
+  const result = await sudoExec(['ifconfig', 'epair', 'create']);
+  const epairName = result.stdout.trim();
+
+  const match = epairName.match(/epair(\d+)a/);
+  if (!match) {
+    throw new Error(`Unexpected epair name format: ${epairName}`);
+  }
+  const epairNum = parseInt(match[1], 10);
+
+  if (epairNum < 0 || epairNum > 255) {
+    throw new Error(
+      `Epair number ${epairNum} exceeds /24 pool capacity (0-255)`,
+    );
+  }
+
+  const hostIface = `epair${epairNum}a`;
+  const jailIface = `epair${epairNum}b`;
+  const hostIP = `${JAIL_CONFIG.jailSubnet}.${epairNum}.1`;
+  const jailIP = `${JAIL_CONFIG.jailSubnet}.${epairNum}.2`;
+  const netmask = '30';
+
+  await sudoExec(['ifconfig', hostIface, `${hostIP}/${netmask}`, 'up']);
+
+  assignedEpairs.set(groupId, epairNum);
+  persistEpairState();
+
+  logger.info(
+    { groupId, epairNum, hostIface, jailIface, hostIP, jailIP },
+    'Created epair',
+  );
+  return { epairNum, hostIface, jailIface, hostIP, jailIP, netmask };
 }
 
 /**
@@ -361,37 +317,8 @@ export function clearAllEpairs(): void {
   persistEpairState();
 }
 
-/** Clean up host-side temporary files (epair lock, session temps). */
+/** Clean up host-side temporary files. */
 export function cleanupHostTempFiles(): void {
   logger.info('Cleaning up host-side temp files');
-
-  if (fs.existsSync(EPAIR_LOCK_DIR)) {
-    try {
-      fs.rmdirSync(EPAIR_LOCK_DIR);
-      logger.debug({ lockDir: EPAIR_LOCK_DIR }, 'Removed epair lock directory');
-    } catch (err) {
-      logger.debug(
-        { err, lockDir: EPAIR_LOCK_DIR },
-        'Could not remove epair lock directory',
-      );
-    }
-  }
-
-  for (const tempFile of sessionTempFiles) {
-    try {
-      if (fs.existsSync(tempFile)) {
-        if (fs.statSync(tempFile).isDirectory()) {
-          fs.rmdirSync(tempFile);
-        } else {
-          fs.unlinkSync(tempFile);
-        }
-        logger.debug({ tempFile }, 'Removed session temp file');
-      }
-    } catch (err) {
-      logger.debug({ err, tempFile }, 'Could not remove session temp file');
-    }
-  }
-
-  sessionTempFiles.clear();
   logger.debug('Completed host-side temp file cleanup');
 }
