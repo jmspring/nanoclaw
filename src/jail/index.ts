@@ -164,7 +164,6 @@ export async function startJailMetrics(config: {
     JAIL_CONFIG.templateDataset,
     JAIL_CONFIG.templateSnapshot,
     poolName,
-    JAIL_CONFIG.jailsPath,
   );
 
   let metricsInterval: ReturnType<typeof setInterval> | null = null;
