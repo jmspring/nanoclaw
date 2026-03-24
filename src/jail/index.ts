@@ -1,6 +1,8 @@
 /**
- * FreeBSD Jail runtime for NanoClaw.
- * Replaces Docker/Apple Container runtime with native FreeBSD jails.
+ * FreeBSD Jail runtime for NanoClaw — public barrel.
+ *
+ * Only exports consumed by callers *outside* jail/.
+ * Internal jail modules import from their siblings directly.
  *
  * Module structure:
  *   types.ts    — Interfaces and type definitions
@@ -10,98 +12,19 @@
  *   mounts.ts   — Mount validation, building, nullfs operations
  *   lifecycle.ts — Create, exec, spawn, stop, destroy
  *   cleanup.ts  — Orphan handling, audit logging, full cleanup
+ *   runner.ts   — Jail agent runner entry point
  */
 
-// Types
-export type {
-  JailMount,
-  JailMountPaths,
-  JailCreationResult,
-  ExecResult,
-  ExecInJailOptions,
-  SpawnInJailOptions,
-  EpairInfo,
-  ResourceLimits,
-  JailConfig,
-  SudoExecResult,
-  SudoExecOptions,
-  SudoExecutor,
-  SudoExecutorSync,
-  JailRuntimeDeps,
-} from './types.js';
+// ── Re-exports consumed by callers outside jail/ ────────────────────
 
-// Config
-export {
-  JAIL_CONFIG, JAIL_MOUNT_LAYOUT, MAX_CONCURRENT_JAILS,
-  JAIL_EXEC_TIMEOUT, JAIL_CREATE_TIMEOUT, JAIL_STOP_TIMEOUT,
-  JAIL_FORCE_STOP_TIMEOUT, JAIL_QUICK_OP_TIMEOUT,
-} from './config.js';
+// Cleanup (used by container-runtime.ts)
+export { cleanupOrphans } from './cleanup.js';
 
-// Sudo / DI
-export { setJailRuntimeDeps, resetJailRuntimeDeps } from './sudo.js';
-
-// Network
-export {
-  restoreEpairState,
-  validatePfConfiguration,
-  getEpairMetrics,
-  cleanupHostTempFiles,
-} from './network.js';
-
-// Mounts
-export { buildJailMounts, ensureHostDirectories } from './mounts.js';
-
-// Lifecycle
-export {
-  sanitizeJailName,
-  getJailName,
-  getJailPath,
-  isJailRunning,
-  isJailRunningAsync,
-  datasetExists,
-  getJailToken,
-  trackJailTempFile,
-  createJailWithPaths,
-  createJail,
-  execInJail,
-  spawnInJail,
-  stopJail,
-  cleanupJail,
-  cleanupByJailName,
-  destroyJail,
-  getActiveJailCount,
-  getJailCapacity,
-  isAtJailCapacity,
-  trackActiveJail,
-  removeRctlLimits,
-} from './lifecycle.js';
-
-// Cleanup
-export {
-  logCleanupAudit,
-  retryWithBackoff,
-  listRunningNanoclawJails,
-  cleanupOrphanEpairs,
-  destroyAllEpairInterfaces,
-  cleanupOrphans,
-  cleanupAllJails,
-  ensureJailRuntimeRunning,
-} from './cleanup.js';
-
-// Metrics
-export {
-  startMetricsServer,
-  updateMetrics,
-  incrementJailCreateCounter,
-  setActiveJailCount,
-  setEpairUsed,
-  setZfsPoolBytesAvail,
-} from './metrics.js';
-
-// Runner
+// Runner (used by container-runner.ts via direct import of runner.js,
+// but re-exported here for discoverability)
 export { runJailAgent } from './runner.js';
 
-// ── Runtime hooks (called by index.ts when runtime === 'jail') ──
+// ── Runtime hooks (called by src/index.ts when runtime === 'jail') ──
 
 import { execFileSync } from 'child_process';
 import { logger } from '../logger.js';

@@ -27,9 +27,9 @@ import {
   createJailWithPaths,
   destroyJail,
   execInJail,
-  JAIL_CONFIG,
-  type JailCreationResult,
-} from './jail/index.js';
+} from './jail/lifecycle.js';
+import { JAIL_CONFIG } from './jail/config.js';
+import type { JailCreationResult } from './jail/types.js';
 import fs from 'fs';
 import path from 'path';
 
