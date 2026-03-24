@@ -7,10 +7,7 @@ import path from 'path';
 import crypto from 'crypto';
 import pino from 'pino';
 import { logger } from '../logger.js';
-import { DATA_DIR } from '../config.js';
 import {
-  JAIL_EXEC_TIMEOUT,
-  JAIL_CREATE_TIMEOUT,
   JAIL_STOP_TIMEOUT,
   JAIL_FORCE_STOP_TIMEOUT,
   JAIL_QUICK_OP_TIMEOUT,
@@ -31,7 +28,6 @@ import {
   buildFstab,
   createMountPoints,
   mountNullfs,
-  unmountAll,
 } from './mounts.js';
 import { logCleanupAudit, retryWithBackoff } from './cleanup.js';
 import type {
@@ -596,104 +592,6 @@ export async function stopJail(groupId: string): Promise<void> {
 }
 
 /**
- * Force cleanup of a jail using aggressive methods when normal cleanup fails.
- */
-async function forceCleanup(
-  jailName: string,
-  mounts: JailMount[],
-  dataset: string,
-  jailPath: string,
-  epairNum: number | null = null,
-): Promise<void> {
-  const sudoExec = getSudoExec();
-  logger.info({ jailName }, 'Starting force cleanup');
-  logCleanupAudit('FORCE_CLEANUP_START', jailName, 'INFO');
-
-  const errors = [];
-
-  if (isJailRunning(jailName)) {
-    try {
-      await sudoExec(['jexec', jailName, 'kill', '-9', '-1'], {
-        timeout: JAIL_QUICK_OP_TIMEOUT,
-      });
-      logCleanupAudit('KILL_PROCESSES', jailName, 'SUCCESS');
-    } catch (error) {
-      logCleanupAudit('KILL_PROCESSES', jailName, 'FAILED', error);
-      errors.push(error as Error);
-    }
-
-    try {
-      await sudoExec(['jail', '-r', jailName], {
-        timeout: JAIL_FORCE_STOP_TIMEOUT,
-      });
-      logCleanupAudit('FORCE_STOP_JAIL', jailName, 'SUCCESS');
-    } catch (error) {
-      logCleanupAudit('FORCE_STOP_JAIL', jailName, 'FAILED', error);
-      errors.push(error as Error);
-    }
-  }
-
-  try {
-    await sudoExec(['umount', '-f', path.join(jailPath, 'dev')], {
-      timeout: JAIL_QUICK_OP_TIMEOUT,
-    });
-  } catch {
-    // Expected to fail if not mounted
-  }
-
-  for (let i = mounts.length - 1; i >= 0; i--) {
-    const mount = mounts[i];
-    const targetPath = path.join(jailPath, mount.jailPath);
-    try {
-      await sudoExec(['umount', '-f', targetPath], {
-        timeout: JAIL_QUICK_OP_TIMEOUT,
-      });
-    } catch (error) {
-      logCleanupAudit('FORCE_UNMOUNT_NULLFS', jailName, 'FAILED', error);
-      errors.push(error as Error);
-    }
-  }
-
-  if (datasetExists(dataset)) {
-    try {
-      await sudoExec(['zfs', 'destroy', '-f', '-r', dataset], {
-        timeout: JAIL_CREATE_TIMEOUT,
-      });
-      logCleanupAudit('FORCE_DESTROY_DATASET', jailName, 'SUCCESS');
-    } catch (error) {
-      logCleanupAudit('FORCE_DESTROY_DATASET', jailName, 'FAILED', error);
-      errors.push(error as Error);
-    }
-  }
-
-  if (epairNum !== null) {
-    try {
-      const hostIface = `epair${epairNum}a`;
-      await sudoExec(['ifconfig', hostIface, 'destroy'], {
-        timeout: JAIL_QUICK_OP_TIMEOUT,
-      });
-    } catch (error) {
-      logCleanupAudit('FORCE_DESTROY_EPAIR', jailName, 'FAILED', error);
-      errors.push(error as Error);
-    }
-  }
-
-  if (errors.length > 0) {
-    logCleanupAudit(
-      'FORCE_CLEANUP_END', jailName, 'PARTIAL',
-      new Error(`${errors.length} errors during force cleanup`),
-    );
-    throw new AggregateError(
-      errors,
-      `Force cleanup completed with ${errors.length} error(s)`,
-    );
-  } else {
-    logCleanupAudit('FORCE_CLEANUP_END', jailName, 'SUCCESS');
-    logger.info({ jailName }, 'Force cleanup completed successfully');
-  }
-}
-
-/**
  * Clean up jail resources (unmount, destroy dataset, remove fstab, remove IP alias).
  */
 export async function cleanupJail(
@@ -792,12 +690,11 @@ export async function cleanupJail(
       // Expected to fail if devfs not mounted
     }
 
-    if (mounts.length > 0) {
+    for (let i = mounts.length - 1; i >= 0; i--) {
+      const mount = mounts[i];
+      const targetPath = path.join(jailPath, mount.jailPath);
       try {
-        await retryWithBackoff(
-          async () => { await unmountAll(mounts, jailPath); },
-          2, 300, 2000,
-        );
+        await sudoExec(['umount', '-f', targetPath]);
         logCleanupAudit('UNMOUNT_NULLFS', jailName, 'SUCCESS');
       } catch (error) {
         logCleanupAudit('UNMOUNT_NULLFS', jailName, 'FAILED', error);
@@ -809,7 +706,7 @@ export async function cleanupJail(
       try {
         await retryWithBackoff(
           async () => {
-            await sudoExec(['zfs', 'destroy', '-r', dataset]);
+            await sudoExec(['zfs', 'destroy', '-f', '-r', dataset]);
             if (datasetExists(dataset)) {
               throw new Error('Dataset still exists after destroy');
             }
@@ -846,35 +743,7 @@ export async function cleanupJail(
     logCleanupAudit('CLEANUP_UNEXPECTED_ERROR', jailName, 'FAILED', unexpectedError);
     errors.push(unexpectedError as Error);
   } finally {
-    if (errors.length > 0) {
-      logger.warn(
-        { jailName, groupId, errorCount: errors.length },
-        'Normal cleanup failed, attempting force cleanup',
-      );
-
-      try {
-        await forceCleanup(jailName, mounts, dataset, jailPath, epairNum);
-        logCleanupAudit('CLEANUP_END', jailName, 'SUCCESS_FORCED');
-      } catch (forceError) {
-        logCleanupAudit('CLEANUP_END', jailName, 'FAILED', forceError);
-
-        if (forceError instanceof AggregateError) {
-          errors.push(...forceError.errors);
-        } else {
-          errors.push(forceError as Error);
-        }
-
-        throw new AggregateError(
-          errors,
-          `Jail cleanup failed (tried normal and force): ${errors.length} error(s)`,
-        );
-      }
-    } else {
-      logger.info({ jailName, groupId }, 'Jail cleanup completed successfully');
-      logCleanupAudit('CLEANUP_END', jailName, 'SUCCESS');
-    }
-
-    // Revoke credential proxy token
+    // Always clean up tokens and tracking, regardless of errors above
     const token = jailTokens.get(groupId);
     if (token) {
       revokeJailToken(token);
@@ -882,6 +751,17 @@ export async function cleanupJail(
     }
 
     activeJails.delete(groupId);
+
+    if (errors.length > 0) {
+      logger.warn(
+        { jailName, groupId, errorCount: errors.length, errors: errors.map(e => e.message) },
+        'Jail cleanup completed with errors',
+      );
+      logCleanupAudit('CLEANUP_END', jailName, 'PARTIAL');
+    } else {
+      logger.info({ jailName, groupId }, 'Jail cleanup completed successfully');
+      logCleanupAudit('CLEANUP_END', jailName, 'SUCCESS');
+    }
   }
 }
 
