@@ -10,7 +10,8 @@
  *   sudo.ts     — Sudo execution helpers with DI for testing
  *   network.ts  — Epair management, pf validation, DNS
  *   mounts.ts   — Mount validation, building, nullfs operations
- *   lifecycle.ts — Create, exec, spawn, stop, destroy
+ *   lifecycle.ts — Create, stop, destroy, and jail state queries
+ *   exec.ts     — Command execution inside running jails
  *   cleanup.ts  — Orphan handling, audit logging, full cleanup
  *   runner.ts   — Jail agent runner entry point
  */
