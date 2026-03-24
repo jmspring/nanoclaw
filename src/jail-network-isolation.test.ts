@@ -37,24 +37,30 @@ import path from 'path';
 const isRestrictedMode = JAIL_CONFIG.networkMode === 'restricted';
 const isFreeBSD = process.platform === 'freebsd';
 let hasPfTables = false;
+let isRoot = false;
 if (isFreeBSD && isRestrictedMode) {
-  try {
-    const { execFileSync } = await import('child_process');
-    execFileSync('sudo', ['pfctl', '-t', 'anthropic_api', '-T', 'show'], {
-      stdio: 'pipe',
-    });
-    hasPfTables = true;
-  } catch {
-    // pf tables not configured
+  isRoot = process.getuid?.() === 0;
+  if (isRoot) {
+    try {
+      const { execFileSync } = await import('child_process');
+      execFileSync('sudo', ['pfctl', '-t', 'anthropic_api', '-T', 'show'], {
+        stdio: 'pipe',
+      });
+      hasPfTables = true;
+    } catch {
+      // pf tables not configured
+    }
   }
 }
 const skipReason = !isFreeBSD
   ? 'Skipping: not running on FreeBSD'
   : !isRestrictedMode
     ? 'Skipping: NANOCLAW_JAIL_NETWORK_MODE != restricted'
-    : !hasPfTables
-      ? 'Skipping: pf tables not configured'
-      : null;
+    : !isRoot
+      ? 'Skipping: must run as root (jail creation requires root)'
+      : !hasPfTables
+        ? 'Skipping: pf tables not configured'
+        : null;
 
 // Test configuration
 const TEST_TIMEOUT = 30000; // 30s for network tests
@@ -73,7 +79,7 @@ const DNS_CLOUDFLARE = '1.1.1.1';
 const BLOCKED_HOST = 'google.com';
 const BLOCKED_IP = '142.250.64.78'; // google.com IP (not in allowlist)
 
-describe.skipIf(!isFreeBSD || !isRestrictedMode || !hasPfTables)(
+describe.skipIf(!isFreeBSD || !isRestrictedMode || !isRoot || !hasPfTables)(
   'Jail Network Isolation (restricted mode)',
   () => {
     let jail1: JailCreationResult | null = null;
