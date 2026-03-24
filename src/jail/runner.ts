@@ -179,6 +179,7 @@ export async function runJailAgent(
 
   const { JAIL_CONFIG: jailConfig } = await import('./config.js');
   const jailLifecycle = await import('./lifecycle.js');
+  const jailExec = await import('./exec.js');
 
   const mountPaths = buildJailMountPaths(group, input.isMain);
 
@@ -249,7 +250,7 @@ export async function runJailAgent(
         exec node /tmp/dist/index.js < /tmp/input.json
       fi
     `;
-    const proc = jailLifecycle.spawnInJail(
+    const proc = jailExec.spawnInJail(
       group.folder,
       ['sh', '-c', entrypointScript],
       { env },

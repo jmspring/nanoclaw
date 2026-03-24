@@ -26,8 +26,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   createJailWithPaths,
   destroyJail,
-  execInJail,
 } from './jail/lifecycle.js';
+import { execInJail } from './jail/exec.js';
 import { JAIL_CONFIG } from './jail/config.js';
 import type { JailCreationResult } from './jail/types.js';
 import fs from 'fs';
