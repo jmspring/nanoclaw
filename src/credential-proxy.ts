@@ -39,8 +39,10 @@ export function isAllowedSource(remoteAddr: string | undefined): boolean {
     'restricted';
 
   if (mode === 'restricted') {
-    // Jails use 10.99.0.0/24 via vnet epair
-    return addr.startsWith('10.99.0.');
+    // Jails use per-epair subnets: {subnet}.{epairNum}.{1|2}
+    // Use env var directly to avoid importing jail modules on non-jail runtimes
+    const subnet = process.env.NANOCLAW_JAIL_SUBNET || '10.99';
+    return addr.startsWith(subnet + '.');
   }
   // Inherit mode: only localhost
   return addr === '127.0.0.1' || addr === '::1';

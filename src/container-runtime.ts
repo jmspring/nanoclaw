@@ -29,7 +29,7 @@ export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
 
 /**
  * Address the credential proxy binds to.
- * FreeBSD Jail: 10.99.0.1 — the jail gateway IP.
+ * FreeBSD Jail: {subnet}.0.1 — the jail gateway IP (default 10.99.0.1).
  * Docker Desktop (macOS): 127.0.0.1.
  * Docker (Linux): bind to the docker0 bridge IP.
  */
@@ -39,7 +39,8 @@ export const PROXY_BIND_HOST =
 function detectProxyBindHost(): string {
   if (getRuntime() === 'jail') {
     const mode = process.env.NANOCLAW_JAIL_NETWORK_MODE || 'restricted';
-    return mode === 'restricted' ? '10.99.0.1' : '127.0.0.1';
+    const subnet = process.env.NANOCLAW_JAIL_SUBNET || '10.99';
+    return mode === 'restricted' ? `${subnet}.0.1` : '127.0.0.1';
   }
 
   if (os.platform() === 'darwin') return '127.0.0.1';

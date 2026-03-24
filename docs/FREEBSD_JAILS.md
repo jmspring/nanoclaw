@@ -1138,8 +1138,9 @@ export const JAIL_CONFIG = {
   // Note: workspacesPath and ipcPath are NOT used by jail-runtime
   // Paths are resolved by container-runner.ts using buildJailMountPaths()
   networkMode: process.env.NANOCLAW_JAIL_NETWORK_MODE || 'inherit',
-  jailHostIP: '10.99.0.1',
-  jailIP: '10.99.0.2',
+  jailSubnet: process.env.NANOCLAW_JAIL_SUBNET || '10.99',  // subnet prefix for jail IPs
+  jailHostIP: `${jailSubnet}.0.1`,   // derived from jailSubnet
+  jailIP: `${jailSubnet}.0.2`,       // derived from jailSubnet
   jailNetmask: '30',
   resourceLimits: {
     memoryuse: process.env.NANOCLAW_JAIL_MEMORY_LIMIT || '2G',
