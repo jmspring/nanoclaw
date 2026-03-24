@@ -710,6 +710,32 @@ export async function cleanupJail(
   logger.info({ jailName, groupId }, 'Cleaning up jail');
   logCleanupAudit('CLEANUP_START', jailName, 'INFO');
 
+  // Discover nullfs mounts when none were supplied (e.g. orphan cleanup)
+  if (mounts.length === 0) {
+    try {
+      const mountOutput = execFileSync('mount', ['-t', 'nullfs'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      const discovered = mountOutput
+        .split('\n')
+        .filter((line) => line.includes(jailPath))
+        .map((line) => {
+          const match = line.match(/^(.+?) on (.+?) \(/);
+          if (!match) return null;
+          return {
+            hostPath: match[1],
+            jailPath: match[2].replace(jailPath, ''),
+            readonly: false,
+          };
+        })
+        .filter((m): m is JailMount => m !== null);
+      mounts = discovered;
+    } catch {
+      /* continue with empty list */
+    }
+  }
+
   const errors = [];
   const epairNum =
     JAIL_CONFIG.networkMode === 'restricted'
@@ -857,6 +883,16 @@ export async function cleanupJail(
 
     activeJails.delete(groupId);
   }
+}
+
+/**
+ * Clean up a jail identified by its full jail name (e.g. "nanoclaw_mygroup_abc123").
+ * Derives the groupId from the jail name and delegates to cleanupJail(),
+ * which handles stop, unmount, dataset destroy, token revocation, etc.
+ */
+export async function cleanupByJailName(jailName: string): Promise<void> {
+  const groupId = jailName.replace(/^nanoclaw_/, '');
+  await cleanupJail(groupId);
 }
 
 /** Destroy a jail completely (stop + cleanup). */

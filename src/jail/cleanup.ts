@@ -5,7 +5,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { logger } from '../logger.js';
-import { JAIL_STOP_TIMEOUT, JAIL_CREATE_TIMEOUT, JAIL_QUICK_OP_TIMEOUT } from './config.js';
+import { JAIL_QUICK_OP_TIMEOUT } from './config.js';
 import { getSudoExec } from './sudo.js';
 import { JAIL_CONFIG } from './config.js';
 import {
@@ -14,7 +14,7 @@ import {
   clearAllEpairs,
   cleanupHostTempFiles,
 } from './network.js';
-import { getJailPath, datasetExists } from './lifecycle.js';
+import { cleanupByJailName } from './lifecycle.js';
 
 /** Cleanup audit logging (opt-in via NANOCLAW_AUDIT_LOG=true) */
 const AUDIT_ENABLED = process.env.NANOCLAW_AUDIT_LOG === 'true';
@@ -91,175 +91,104 @@ export function listRunningNanoclawJails(): string[] {
   }
 }
 
-/** Kill orphaned NanoClaw jails from previous runs. */
-export function cleanupOrphans(): void {
+/**
+ * Destroy orphaned epair interfaces that are no longer tracked by any jail.
+ * Operates on system-wide interface state — called after individual jail cleanup.
+ */
+export function cleanupOrphanEpairs(): void {
   try {
-    const output = execFileSync('sudo', ['jls', '-N', 'name'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
+    restoreEpairState();
+
+    const ifconfigOutput = execFileSync('ifconfig', ['-l'], {
       encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
+    const interfaces = ifconfigOutput.trim().split(/\s+/);
+    const epairRegex = /^epair(\d+)a$/;
 
-    const orphans = output
-      .trim()
-      .split('\n')
-      .filter((line) => line.startsWith('nanoclaw_'));
-
-    for (const jailName of orphans) {
-      // Clean temp files before stopping
-      for (const tempPath of ['/tmp/dist', '/tmp/input.json']) {
-        try {
-          execFileSync('sudo', ['jexec', jailName, 'rm', '-rf', tempPath], {
-            stdio: 'pipe',
-            timeout: 5000,
-          });
-        } catch {
-          // File may not exist
-        }
-      }
-
-      // Remove rctl limits
-      try {
-        execFileSync('sudo', ['rctl', '-r', `jail:${jailName}`], {
-          stdio: 'pipe',
-          timeout: JAIL_QUICK_OP_TIMEOUT,
-        });
-      } catch {
-        // May not have rctl rules
-      }
-
-      try {
-        execFileSync('sudo', ['jail', '-r', jailName], {
-          stdio: 'pipe',
-          timeout: JAIL_STOP_TIMEOUT,
-        });
-        logger.info({ jailName }, 'Stopped orphaned jail');
-      } catch {
-        logger.warn(
-          { jailName },
-          'Could not stop orphaned jail, attempting cleanup',
-        );
-      }
-
-      // Unmount any nullfs mounts
-      const orphanJailPath = getJailPath(jailName);
-      try {
-        const mountOutput = execFileSync('mount', ['-t', 'nullfs'], {
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
-        const jailMounts = mountOutput
-          .split('\n')
-          .filter((line) => line.includes(orphanJailPath))
-          .map((line) => {
-            const match = line.match(/on (.+?) \(/);
-            return match ? match[1] : null;
-          })
-          .filter((m): m is string => m !== null)
-          .reverse();
-
-        for (const mountPoint of jailMounts) {
+    for (const iface of interfaces) {
+      const match = iface.match(epairRegex);
+      if (match) {
+        const epairNum = parseInt(match[1], 10);
+        // If no group is assigned this epair number, it is orphaned
+        if (getAssignedEpair(`_epair_check_${epairNum}`) === undefined) {
           try {
-            execFileSync('sudo', ['umount', '-f', mountPoint], {
+            execFileSync('sudo', ['ifconfig', iface, 'destroy'], {
               stdio: 'pipe',
               timeout: JAIL_QUICK_OP_TIMEOUT,
             });
+            logger.info({ epairNum, iface }, 'Destroyed orphan epair');
           } catch {
-            // Already unmounted
+            logger.warn({ epairNum, iface }, 'Could not destroy orphan epair');
           }
         }
-      } catch {
-        // No mounts or error checking
       }
+    }
+  } catch {
+    // No epairs or error listing interfaces
+  }
+}
 
-      // Destroy leftover datasets
-      const dataset = `${JAIL_CONFIG.jailsDataset}/${jailName}`;
-      if (datasetExists(dataset)) {
+/**
+ * Destroy ALL epair interfaces on the host (used during full shutdown).
+ */
+export async function destroyAllEpairInterfaces(): Promise<void> {
+  const sudoExec = getSudoExec();
+  try {
+    const ifconfigOutput = execFileSync('ifconfig', ['-l'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const interfaces = ifconfigOutput.trim().split(/\s+/);
+    const epairRegex = /^epair(\d+)a$/;
+
+    for (const iface of interfaces) {
+      if (epairRegex.test(iface)) {
         try {
-          execFileSync('sudo', ['zfs', 'destroy', '-r', dataset], {
-            stdio: 'pipe',
-            timeout: JAIL_STOP_TIMEOUT,
-          });
+          await sudoExec(['ifconfig', iface, 'destroy']);
         } catch {
-          logger.warn({ dataset }, 'Could not destroy orphan dataset');
+          logger.warn({ iface }, 'Failed to destroy epair');
         }
       }
-
-      // Clean up fstab
-      const fstabPath = path.join(JAIL_CONFIG.jailsPath, `${jailName}.fstab`);
-      if (fs.existsSync(fstabPath)) {
-        try { fs.unlinkSync(fstabPath); } catch { /* ignore */ }
-      }
     }
+  } catch {
+    // No epairs or error listing interfaces
+  }
+}
 
-    // Clean up orphan epair interfaces
-    if (JAIL_CONFIG.networkMode === 'restricted') {
-      try {
-        restoreEpairState();
+/**
+ * Kill orphaned NanoClaw jails from previous runs.
+ * Delegates to cleanupByJailName() in lifecycle.ts for each jail,
+ * which ensures proper stop, unmount, dataset destroy, AND token revocation.
+ */
+export function cleanupOrphans(): void {
+  const orphans = listRunningNanoclawJails();
 
-        const ifconfigOutput = execFileSync('ifconfig', ['-l'], {
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
-        const interfaces = ifconfigOutput.trim().split(/\s+/);
-        const epairRegex = /^epair(\d+)a$/;
+  for (const jailName of orphans) {
+    cleanupByJailName(jailName).catch((err) => {
+      logger.warn({ jailName, err }, 'Could not clean up orphaned jail');
+    });
+  }
 
-        for (const iface of interfaces) {
-          const match = iface.match(epairRegex);
-          if (match) {
-            const epairNum = parseInt(match[1], 10);
-            // Check if tracked — if not, it's orphaned
-            if (getAssignedEpair(`_epair_check_${epairNum}`) === undefined) {
-              // More robust: check if ANY group has this epair
-              // The getAssignedEpair check above won't work; use a different approach
-              try {
-                execFileSync('sudo', ['ifconfig', iface, 'destroy'], {
-                  stdio: 'pipe',
-                  timeout: JAIL_QUICK_OP_TIMEOUT,
-                });
-                logger.info({ epairNum, iface }, 'Destroyed orphan epair');
-              } catch {
-                logger.warn({ epairNum, iface }, 'Could not destroy orphan epair');
-              }
-            }
-          }
-        }
-      } catch {
-        // No epairs or error checking
-      }
-    }
+  if (JAIL_CONFIG.networkMode === 'restricted') {
+    cleanupOrphanEpairs();
+  }
 
-    if (orphans.length > 0) {
-      logger.info(
-        { count: orphans.length, names: orphans },
-        'Cleaned up orphaned jails',
-      );
-    }
-  } catch (err) {
-    logger.error({ err }, 'Failed to clean up orphaned jails');
+  if (orphans.length > 0) {
+    logger.info(
+      { count: orphans.length, names: orphans },
+      'Cleaned up orphaned jails',
+    );
   }
 }
 
 /**
  * Clean up all running NanoClaw jails (called during shutdown).
+ * Delegates to cleanupByJailName() in lifecycle.ts for each jail,
+ * which ensures proper stop, unmount, dataset destroy, AND token revocation.
  */
 export async function cleanupAllJails(): Promise<void> {
-  const sudoExec = getSudoExec();
-  logger.info('Cleaning up all NanoClaw jails');
-
-  let jailNames: string[] = [];
-  try {
-    const output = execFileSync('sudo', ['jls', '-N', 'name'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      encoding: 'utf-8',
-    });
-    jailNames = output
-      .trim()
-      .split('\n')
-      .filter((line) => line.startsWith('nanoclaw_'));
-  } catch {
-    logger.debug('No running jails found or jls failed');
-    return;
-  }
+  const jailNames = listRunningNanoclawJails();
 
   if (jailNames.length === 0) {
     logger.debug('No NanoClaw jails to clean up');
@@ -268,116 +197,24 @@ export async function cleanupAllJails(): Promise<void> {
 
   logger.info(
     { count: jailNames.length, names: jailNames },
-    'Found jails to clean up',
+    'Cleaning up all jails',
   );
 
   for (const jailName of jailNames) {
-    const jailPath = getJailPath(jailName);
-    const dataset = `${JAIL_CONFIG.jailsDataset}/${jailName}`;
-    const fstabPath = path.join(JAIL_CONFIG.jailsPath, `${jailName}.fstab`);
-
-    // Remove rctl limits
     try {
-      await sudoExec(['rctl', '-r', `jail:${jailName}`], {
-        timeout: JAIL_QUICK_OP_TIMEOUT,
-      });
-    } catch {
-      // Continue cleanup
+      await cleanupByJailName(jailName);
+    } catch (err) {
+      logger.warn({ jailName, err }, 'Cleanup failed for jail');
     }
-
-    // Stop jail
-    try {
-      await sudoExec(['jail', '-r', jailName], { timeout: JAIL_STOP_TIMEOUT });
-    } catch {
-      // Continue cleanup
-    }
-
-    // Unmount devfs
-    try {
-      await sudoExec(['umount', '-f', path.join(jailPath, 'dev')], {
-        timeout: JAIL_QUICK_OP_TIMEOUT,
-      });
-    } catch {
-      // Continue
-    }
-
-    // Unmount all nullfs mounts
-    try {
-      const mountOutput = execFileSync('mount', ['-t', 'nullfs'], {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      const jailMounts = mountOutput
-        .split('\n')
-        .filter((line) => line.includes(jailPath))
-        .map((line) => {
-          const match = line.match(/on (.+?) \(/);
-          return match ? match[1] : null;
-        })
-        .filter((m): m is string => m !== null)
-        .reverse();
-
-      for (const mountPoint of jailMounts) {
-        try {
-          await sudoExec(['umount', '-f', mountPoint], {
-            timeout: JAIL_QUICK_OP_TIMEOUT,
-          });
-        } catch {
-          // Continue
-        }
-      }
-    } catch {
-      // Continue
-    }
-
-    // Destroy ZFS dataset
-    if (datasetExists(dataset)) {
-      try {
-        await sudoExec(['zfs', 'destroy', '-r', dataset], {
-          timeout: JAIL_CREATE_TIMEOUT,
-        });
-      } catch {
-        // Continue
-      }
-    }
-
-    // Remove fstab
-    if (fs.existsSync(fstabPath)) {
-      try { fs.unlinkSync(fstabPath); } catch { /* continue */ }
-    }
-
-    logger.info({ jailName }, 'Completed cleanup for jail');
   }
 
-  // Destroy all epair interfaces
   if (JAIL_CONFIG.networkMode === 'restricted') {
-    try {
-      const ifconfigOutput = execFileSync('ifconfig', ['-l'], {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      const interfaces = ifconfigOutput.trim().split(/\s+/);
-      const epairRegex = /^epair(\d+)a$/;
-
-      for (const iface of interfaces) {
-        const match = iface.match(epairRegex);
-        if (match) {
-          try {
-            await sudoExec(['ifconfig', iface, 'destroy']);
-          } catch {
-            logger.warn({ iface }, 'Failed to destroy epair');
-          }
-        }
-      }
-    } catch {
-      // Continue
-    }
-
+    await destroyAllEpairInterfaces();
     clearAllEpairs();
   }
 
-  logger.info('Finished cleaning up all NanoClaw jails');
   cleanupHostTempFiles();
+  logger.info('Finished cleaning up all NanoClaw jails');
 }
 
 /** Ensure the jail subsystem is available. */
