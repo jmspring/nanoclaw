@@ -76,7 +76,7 @@ describe('stopContainerArgs', () => {
   it('returns command and args array for stopping container', () => {
     const [cmd, args] = stopContainerArgs('nanoclaw-test-123');
     expect(cmd).toBe(CONTAINER_RUNTIME_BIN);
-    expect(args).toEqual(['stop', 'nanoclaw-test-123']);
+    expect(args).toEqual(['stop', '-t', '1', 'nanoclaw-test-123']);
   });
 });
 
@@ -130,13 +130,13 @@ describe('cleanupOrphans', () => {
     expect(mockExecFileSync).toHaveBeenNthCalledWith(
       1,
       CONTAINER_RUNTIME_BIN,
-      ['stop', 'nanoclaw-group1-111'],
+      ['stop', '-t', '1', 'nanoclaw-group1-111'],
       { stdio: 'pipe' },
     );
     expect(mockExecFileSync).toHaveBeenNthCalledWith(
       2,
       CONTAINER_RUNTIME_BIN,
-      ['stop', 'nanoclaw-group2-222'],
+      ['stop', '-t', '1', 'nanoclaw-group2-222'],
       { stdio: 'pipe' },
     );
     expect(logger.info).toHaveBeenCalledWith(
