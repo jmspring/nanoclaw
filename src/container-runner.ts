@@ -29,7 +29,11 @@ import {
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
-import { handleAgentProcess, type ContainerInput, type ContainerOutput } from './runner-common.js';
+import {
+  handleAgentProcess,
+  type ContainerInput,
+  type ContainerOutput,
+} from './runner-common.js';
 
 // Re-export types from runner-common so existing consumers don't break
 export type { ContainerInput, ContainerOutput } from './runner-common.js';
@@ -201,11 +205,22 @@ function buildVolumeMounts(
 /** Default allowed tools for all groups. */
 const ALL_TOOLS = [
   'Bash',
-  'Read', 'Write', 'Edit', 'Glob', 'Grep',
-  'WebSearch', 'WebFetch',
-  'Task', 'TaskOutput', 'TaskStop',
-  'TeamCreate', 'TeamDelete', 'SendMessage',
-  'TodoWrite', 'ToolSearch', 'Skill',
+  'Read',
+  'Write',
+  'Edit',
+  'Glob',
+  'Grep',
+  'WebSearch',
+  'WebFetch',
+  'Task',
+  'TaskOutput',
+  'TaskStop',
+  'TeamCreate',
+  'TeamDelete',
+  'SendMessage',
+  'TodoWrite',
+  'ToolSearch',
+  'Skill',
   'NotebookEdit',
   'mcp__nanoclaw__*',
 ];
@@ -319,78 +334,78 @@ export async function runContainerAgent(
       tracedLogger,
     );
   } else {
-
-  // Docker path only below this point
-  const mounts = buildVolumeMounts(group, input.isMain);
-  const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
-  const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, input.isMain);
-
-  log.debug(
-    {
-      group: group.name,
+    // Docker path only below this point
+    const mounts = buildVolumeMounts(group, input.isMain);
+    const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
+    const containerName = `nanoclaw-${safeName}-${Date.now()}`;
+    const containerArgs = buildContainerArgs(
+      mounts,
       containerName,
-      mounts: mounts.map(
-        (m) =>
-          `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
-      ),
-      containerArgs: containerArgs.join(' '),
-    },
-    'Container mount configuration',
-  );
+      input.isMain,
+    );
 
-  log.info(
-    {
-      group: group.name,
-      containerName,
-      mountCount: mounts.length,
-      isMain: input.isMain,
-    },
-    'Spawning container agent',
-  );
+    log.debug(
+      {
+        group: group.name,
+        containerName,
+        mounts: mounts.map(
+          (m) =>
+            `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
+        ),
+        containerArgs: containerArgs.join(' '),
+      },
+      'Container mount configuration',
+    );
 
-  const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+    log.info(
+      {
+        group: group.name,
+        containerName,
+        mountCount: mounts.length,
+        isMain: input.isMain,
+      },
+      'Spawning container agent',
+    );
 
-  result = await handleAgentProcess({
-    proc: container,
-    processLabel: containerName,
-    runtimeLabel: 'Container',
-    groupName: group.name,
-    input,
-    logsDir,
-    configTimeout: group.containerConfig?.timeout || CONTAINER_TIMEOUT,
-    onProcess,
-    onOutput,
-    onTimeout: () =>
-      new Promise<void>((resolve, reject) => {
-        execFile(
-          ...stopContainerArgs(containerName),
-          { timeout: 15000 },
-          (err) => {
-            if (err) reject(err);
-            else resolve();
-          },
-        );
-      }),
-    onClose: async () => {
-      // Docker containers are --rm, no cleanup needed
-    },
-    onError: async () => {
-      // Docker containers are --rm, no cleanup needed
-    },
-    traceId,
-    log,
-    mountLog: mounts.map((m) => ({
-      verbose: `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
-      brief: `${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
-    })),
-    extraVerboseLogLines: [
-      `=== Container Args ===`,
-      containerArgs.join(' '),
-    ],
-  });
+    const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    result = await handleAgentProcess({
+      proc: container,
+      processLabel: containerName,
+      runtimeLabel: 'Container',
+      groupName: group.name,
+      input,
+      logsDir,
+      configTimeout: group.containerConfig?.timeout || CONTAINER_TIMEOUT,
+      onProcess,
+      onOutput,
+      onTimeout: () =>
+        new Promise<void>((resolve, reject) => {
+          execFile(
+            ...stopContainerArgs(containerName),
+            { timeout: 15000 },
+            (err) => {
+              if (err) reject(err);
+              else resolve();
+            },
+          );
+        }),
+      onClose: async () => {
+        // Docker containers are --rm, no cleanup needed
+      },
+      onError: async () => {
+        // Docker containers are --rm, no cleanup needed
+      },
+      traceId,
+      log,
+      mountLog: mounts.map((m) => ({
+        verbose: `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
+        brief: `${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
+      })),
+      extraVerboseLogLines: [`=== Container Args ===`, containerArgs.join(' ')],
+    });
   }
 
   // Integrity check: compare CLAUDE.md hash after agent run

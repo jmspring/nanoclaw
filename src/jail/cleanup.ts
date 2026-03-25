@@ -220,7 +220,10 @@ export async function cleanupAllJails(): Promise<void> {
 /** Ensure the jail subsystem is available. */
 export function ensureJailRuntimeRunning(): void {
   try {
-    execFileSync('zfs', ['version'], { stdio: 'pipe', timeout: JAIL_QUICK_OP_TIMEOUT });
+    execFileSync('zfs', ['version'], {
+      stdio: 'pipe',
+      timeout: JAIL_QUICK_OP_TIMEOUT,
+    });
 
     const snapshot = `${JAIL_CONFIG.templateDataset}@${JAIL_CONFIG.templateSnapshot}`;
     execFileSync('zfs', ['list', '-t', 'snapshot', '-H', snapshot], {
@@ -228,7 +231,10 @@ export function ensureJailRuntimeRunning(): void {
       timeout: JAIL_QUICK_OP_TIMEOUT,
     });
 
-    execFileSync('which', ['jail'], { stdio: 'pipe', timeout: JAIL_QUICK_OP_TIMEOUT });
+    execFileSync('which', ['jail'], {
+      stdio: 'pipe',
+      timeout: JAIL_QUICK_OP_TIMEOUT,
+    });
 
     // Import validatePfConfiguration from network to avoid circular deps
     // pf validation is done inline here

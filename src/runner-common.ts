@@ -85,7 +85,9 @@ export interface AgentProcessOptions {
  * Returns a Promise<ContainerOutput> that resolves when the process exits
  * (or times out).
  */
-export function handleAgentProcess(opts: AgentProcessOptions): Promise<ContainerOutput> {
+export function handleAgentProcess(
+  opts: AgentProcessOptions,
+): Promise<ContainerOutput> {
   const {
     proc,
     processLabel,
@@ -221,7 +223,8 @@ export function handleAgentProcess(opts: AgentProcessOptions): Promise<Container
         const chunk = data.toString();
         const lines = chunk.trim().split('\n');
         for (const line of lines) {
-          if (line) log.debug({ [runtimeLabel.toLowerCase()]: groupName }, line);
+          if (line)
+            log.debug({ [runtimeLabel.toLowerCase()]: groupName }, line);
         }
         // Don't reset timeout on stderr — SDK writes debug logs continuously.
         // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
@@ -249,7 +252,10 @@ export function handleAgentProcess(opts: AgentProcessOptions): Promise<Container
       try {
         await onClose();
       } catch (err) {
-        log.warn({ group: groupName, err }, `Failed to clean up ${runtimeLabel.toLowerCase()}`);
+        log.warn(
+          { group: groupName, err },
+          `Failed to clean up ${runtimeLabel.toLowerCase()}`,
+        );
       }
 
       if (timedOut) {
@@ -269,7 +275,12 @@ export function handleAgentProcess(opts: AgentProcessOptions): Promise<Container
         // process being reaped after the idle period expired.
         if (hadStreamingOutput) {
           log.info(
-            { group: groupName, [runtimeLabel.toLowerCase()]: processLabel, duration, code },
+            {
+              group: groupName,
+              [runtimeLabel.toLowerCase()]: processLabel,
+              duration,
+              code,
+            },
             `${runtimeLabel} timed out after output (idle cleanup)`,
           );
           outputChain.then(() => {
@@ -283,7 +294,12 @@ export function handleAgentProcess(opts: AgentProcessOptions): Promise<Container
         }
 
         log.error(
-          { group: groupName, [runtimeLabel.toLowerCase()]: processLabel, duration, code },
+          {
+            group: groupName,
+            [runtimeLabel.toLowerCase()]: processLabel,
+            duration,
+            code,
+          },
           `${runtimeLabel} timed out with no output`,
         );
 
@@ -314,11 +330,7 @@ export function handleAgentProcess(opts: AgentProcessOptions): Promise<Container
       const isError = code !== 0;
 
       if (isVerbose || isError) {
-        logLines.push(
-          `=== Input ===`,
-          JSON.stringify(input, null, 2),
-          ``,
-        );
+        logLines.push(`=== Input ===`, JSON.stringify(input, null, 2), ``);
         if (extraVerboseLogLines) {
           logLines.push(...extraVerboseLogLines, ``);
         }
@@ -439,7 +451,11 @@ export function handleAgentProcess(opts: AgentProcessOptions): Promise<Container
     proc.on('error', async (err: Error) => {
       clearTimeout(timeout);
       log.error(
-        { group: groupName, [runtimeLabel.toLowerCase()]: processLabel, error: err },
+        {
+          group: groupName,
+          [runtimeLabel.toLowerCase()]: processLabel,
+          error: err,
+        },
         `${runtimeLabel} spawn error`,
       );
 

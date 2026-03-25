@@ -56,9 +56,13 @@ vi.mock('./container-runtime.js', () => ({
   CONTAINER_HOST_GATEWAY: 'host.docker.internal',
   CONTAINER_RUNTIME_BIN: 'docker',
   getRuntime: vi.fn(() => 'docker'),
-  hostGatewayArgs: vi.fn(() => ['--add-host', 'host.docker.internal:host-gateway']),
+  hostGatewayArgs: vi.fn(() => [
+    '--add-host',
+    'host.docker.internal:host-gateway',
+  ]),
   readonlyMountArgs: vi.fn((hostPath: string, containerPath: string) => [
-    '-v', `${hostPath}:${containerPath}:ro`,
+    '-v',
+    `${hostPath}:${containerPath}:ro`,
   ]),
   stopContainerArgs: vi.fn((name: string) => ['docker', ['stop', name]]),
 }));
@@ -75,8 +79,12 @@ vi.mock('./log-rotation.js', () => ({
 
 // Mock group-folder
 vi.mock('./group-folder.js', () => ({
-  resolveGroupFolderPath: vi.fn((folder: string) => `/tmp/nanoclaw-test-groups/${folder}`),
-  resolveGroupIpcPath: vi.fn((folder: string) => `/tmp/nanoclaw-test-data/ipc/${folder}`),
+  resolveGroupFolderPath: vi.fn(
+    (folder: string) => `/tmp/nanoclaw-test-groups/${folder}`,
+  ),
+  resolveGroupIpcPath: vi.fn(
+    (folder: string) => `/tmp/nanoclaw-test-data/ipc/${folder}`,
+  ),
 }));
 
 // Create a controllable fake ChildProcess
@@ -114,7 +122,11 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { runContainerAgent, ContainerOutput, hashFile } from './container-runner.js';
+import {
+  runContainerAgent,
+  ContainerOutput,
+  hashFile,
+} from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
@@ -164,11 +176,7 @@ describe('CLAUDE.md integrity checking', () => {
       return '';
     }) as typeof fs.readFileSync);
 
-    const resultPromise = runContainerAgent(
-      testGroup,
-      testInput,
-      () => {},
-    );
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
 
     emitOutputMarker(fakeProc, {
       status: 'success',
@@ -182,7 +190,10 @@ describe('CLAUDE.md integrity checking', () => {
 
     await resultPromise;
     expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ preHash: expect.any(String), postHash: expect.any(String) }),
+      expect.objectContaining({
+        preHash: expect.any(String),
+        postHash: expect.any(String),
+      }),
       'CLAUDE.md was modified during agent run',
     );
   });
@@ -202,13 +213,11 @@ describe('agent-runner mount is read-only', () => {
     const { spawn } = await import('child_process');
     const { readonlyMountArgs } = await import('./container-runtime.js');
 
-    const resultPromise = runContainerAgent(
-      testGroup,
-      testInput,
-      () => {},
-    );
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
 
-    fakeProc.stdout.push(`${OUTPUT_START_MARKER}\n${JSON.stringify({ status: 'success', result: 'ok' })}\n${OUTPUT_END_MARKER}\n`);
+    fakeProc.stdout.push(
+      `${OUTPUT_START_MARKER}\n${JSON.stringify({ status: 'success', result: 'ok' })}\n${OUTPUT_END_MARKER}\n`,
+    );
     await vi.advanceTimersByTimeAsync(10);
     fakeProc.emit('close', 0);
     await vi.advanceTimersByTimeAsync(10);

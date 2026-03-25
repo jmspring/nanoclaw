@@ -23,10 +23,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import {
-  createJailWithPaths,
-  destroyJail,
-} from './jail/lifecycle.js';
+import { createJailWithPaths, destroyJail } from './jail/lifecycle.js';
 import { execInJail } from './jail/exec.js';
 import { JAIL_CONFIG } from './jail/config.js';
 import type { JailCreationResult } from './jail/types.js';

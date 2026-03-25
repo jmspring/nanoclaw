@@ -36,7 +36,10 @@ function defaultSudoExec(
 }
 
 /** Default implementation: Execute a command with sudo synchronously */
-function defaultSudoExecSync(args: string[], options: SudoExecOptions = {}): string {
+function defaultSudoExecSync(
+  args: string[],
+  options: SudoExecOptions = {},
+): string {
   try {
     return execFileSync('sudo', args, {
       encoding: 'utf-8',

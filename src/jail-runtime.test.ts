@@ -148,7 +148,9 @@ describe('jail-runtime dependency injection', () => {
     it('does nothing when jail is not running', async () => {
       const expectedName = getJailName('test-group');
       // Mock isJailRunning (sync) returning false (throws = not running)
-      mockSudoExecSync.mockImplementationOnce(() => { throw new Error('jail not found'); });
+      mockSudoExecSync.mockImplementationOnce(() => {
+        throw new Error('jail not found');
+      });
 
       await stopJail('test-group');
 
@@ -166,9 +168,9 @@ describe('jail-runtime dependency injection', () => {
       // Mock isJailRunning (sync) returning true, then graceful stop failing, then force stop succeeding
       mockSudoExecSync.mockReturnValueOnce('123\n'); // isJailRunning
       mockSudoExec
-        .mockRejectedValueOnce(new Error('jail -r failed'))     // graceful stop
-        .mockResolvedValueOnce({ stdout: '', stderr: '' })      // kill processes
-        .mockResolvedValueOnce({ stdout: '', stderr: '' });     // force stop
+        .mockRejectedValueOnce(new Error('jail -r failed')) // graceful stop
+        .mockResolvedValueOnce({ stdout: '', stderr: '' }) // kill processes
+        .mockResolvedValueOnce({ stdout: '', stderr: '' }); // force stop
 
       await stopJail('test-group');
 
@@ -208,14 +210,22 @@ describe('jail-runtime dependency injection', () => {
 
   describe('sanitizeJailName', () => {
     it('replaces non-alphanumeric characters with underscores and appends hash', () => {
-      expect(sanitizeJailName('test@group.com')).toMatch(/^test_group_com_[0-9a-f]{6}$/);
+      expect(sanitizeJailName('test@group.com')).toMatch(
+        /^test_group_com_[0-9a-f]{6}$/,
+      );
       expect(sanitizeJailName('user-123')).toMatch(/^user_123_[0-9a-f]{6}$/);
-      expect(sanitizeJailName('test group')).toMatch(/^test_group_[0-9a-f]{6}$/);
+      expect(sanitizeJailName('test group')).toMatch(
+        /^test_group_[0-9a-f]{6}$/,
+      );
     });
 
     it('preserves alphanumeric and underscore characters and appends hash', () => {
-      expect(sanitizeJailName('test_group_123')).toMatch(/^test_group_123_[0-9a-f]{6}$/);
-      expect(sanitizeJailName('alphanumeric123')).toMatch(/^alphanumeric123_[0-9a-f]{6}$/);
+      expect(sanitizeJailName('test_group_123')).toMatch(
+        /^test_group_123_[0-9a-f]{6}$/,
+      );
+      expect(sanitizeJailName('alphanumeric123')).toMatch(
+        /^alphanumeric123_[0-9a-f]{6}$/,
+      );
     });
 
     it('produces deterministic output', () => {
@@ -225,8 +235,12 @@ describe('jail-runtime dependency injection', () => {
 
   describe('getJailName', () => {
     it('generates jail name with nanoclaw prefix', () => {
-      expect(getJailName('test-group')).toMatch(/^nanoclaw_test_group_[0-9a-f]{6}$/);
-      expect(getJailName('user@example.com')).toMatch(/^nanoclaw_user_example_com_[0-9a-f]{6}$/);
+      expect(getJailName('test-group')).toMatch(
+        /^nanoclaw_test_group_[0-9a-f]{6}$/,
+      );
+      expect(getJailName('user@example.com')).toMatch(
+        /^nanoclaw_user_example_com_[0-9a-f]{6}$/,
+      );
     });
   });
 });

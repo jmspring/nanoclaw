@@ -13,13 +13,19 @@ import {
   TaskRunLog,
 } from './types.js';
 
-export const ContainerConfigSchema = z.object({
-  additionalMounts: z.array(z.object({
-    hostPath: z.string(),
-    containerPath: z.string(),
-    readonly: z.boolean().optional(),
-  })).optional(),
-}).passthrough();
+export const ContainerConfigSchema = z
+  .object({
+    additionalMounts: z
+      .array(
+        z.object({
+          hostPath: z.string(),
+          containerPath: z.string(),
+          readonly: z.boolean().optional(),
+        }),
+      )
+      .optional(),
+  })
+  .passthrough();
 
 const DB_PATH = path.join(STORE_DIR, 'messages.db');
 
@@ -598,7 +604,9 @@ export function getRegisteredGroup(
   let containerConfig: RegisteredGroup['containerConfig'];
   if (row.container_config) {
     try {
-      containerConfig = ContainerConfigSchema.parse(JSON.parse(row.container_config));
+      containerConfig = ContainerConfigSchema.parse(
+        JSON.parse(row.container_config),
+      );
     } catch (err) {
       logger.warn(
         { jid: row.jid, err },
@@ -662,7 +670,9 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     let containerConfig: RegisteredGroup['containerConfig'];
     if (row.container_config) {
       try {
-        containerConfig = ContainerConfigSchema.parse(JSON.parse(row.container_config));
+        containerConfig = ContainerConfigSchema.parse(
+          JSON.parse(row.container_config),
+        );
       } catch (err) {
         logger.warn(
           { jid: row.jid, err },

@@ -30,10 +30,7 @@ export { runJailAgent } from './runner.js';
 import { execFileSync } from 'child_process';
 import { logger } from '../logger.js';
 import { JAIL_CONFIG } from './config.js';
-import {
-  getActiveJailCount,
-  trackActiveJail,
-} from './lifecycle.js';
+import { getActiveJailCount, trackActiveJail } from './lifecycle.js';
 import { getEpairMetrics } from './network.js';
 import { listRunningNanoclawJails, cleanupAllJails } from './cleanup.js';
 import { startMetricsServer, updateMetrics } from './metrics.js';
@@ -49,7 +46,10 @@ export async function reconnectToRunningJails(): Promise<void> {
     for (const name of running) {
       trackActiveJail(name);
     }
-    logger.info({ count: running.length, jails: running }, 'Reconnected to existing running jails');
+    logger.info(
+      { count: running.length, jails: running },
+      'Reconnected to existing running jails',
+    );
   } catch (err) {
     logger.warn({ err }, 'Failed to reconnect to running jails');
   }
@@ -112,48 +112,55 @@ export async function startJailMetrics(config: {
 export function startJailHealthChecks(
   onAlert: (message: string) => void,
 ): () => void {
-  const interval = setInterval(async () => {
-    try {
-      const poolName = JAIL_CONFIG.jailsDataset.split('/')[0];
-
-      // Check ZFS pool space
+  const interval = setInterval(
+    async () => {
       try {
-        const availOutput = execFileSync(
-          'zfs', ['get', '-Hp', '-o', 'value', 'available', poolName],
-          { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
-        );
-        const usedOutput = execFileSync(
-          'zfs', ['get', '-Hp', '-o', 'value', 'used', poolName],
-          { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
-        );
-        const avail = parseInt(availOutput.trim(), 10);
-        const used = parseInt(usedOutput.trim(), 10);
-        if (avail > 0 && used > 0) {
-          const pctAvail = (avail / (avail + used)) * 100;
-          if (pctAvail < 10) {
-            onAlert(
-              `ZFS pool "${poolName}" is low on space: ${pctAvail.toFixed(1)}% free (${Math.round(avail / 1024 / 1024)}MB available).`,
-            );
+        const poolName = JAIL_CONFIG.jailsDataset.split('/')[0];
+
+        // Check ZFS pool space
+        try {
+          const availOutput = execFileSync(
+            'zfs',
+            ['get', '-Hp', '-o', 'value', 'available', poolName],
+            { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
+          );
+          const usedOutput = execFileSync(
+            'zfs',
+            ['get', '-Hp', '-o', 'value', 'used', poolName],
+            { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 },
+          );
+          const avail = parseInt(availOutput.trim(), 10);
+          const used = parseInt(usedOutput.trim(), 10);
+          if (avail > 0 && used > 0) {
+            const pctAvail = (avail / (avail + used)) * 100;
+            if (pctAvail < 10) {
+              onAlert(
+                `ZFS pool "${poolName}" is low on space: ${pctAvail.toFixed(1)}% free (${Math.round(avail / 1024 / 1024)}MB available).`,
+              );
+            }
           }
+        } catch {
+          // ZFS check failed — skip
         }
-      } catch {
-        // ZFS check failed — skip
-      }
 
-      // Check template snapshot exists
-      const snapshot = `${JAIL_CONFIG.templateDataset}@${JAIL_CONFIG.templateSnapshot}`;
-      try {
-        execFileSync('zfs', ['list', '-t', 'snapshot', '-H', snapshot], {
-          stdio: 'pipe',
-          timeout: 5000,
-        });
-      } catch {
-        onAlert(`Template snapshot missing: ${snapshot}. New jails cannot be created.`);
+        // Check template snapshot exists
+        const snapshot = `${JAIL_CONFIG.templateDataset}@${JAIL_CONFIG.templateSnapshot}`;
+        try {
+          execFileSync('zfs', ['list', '-t', 'snapshot', '-H', snapshot], {
+            stdio: 'pipe',
+            timeout: 5000,
+          });
+        } catch {
+          onAlert(
+            `Template snapshot missing: ${snapshot}. New jails cannot be created.`,
+          );
+        }
+      } catch (err) {
+        logger.debug({ err }, 'Runtime health check failed');
       }
-    } catch (err) {
-      logger.debug({ err }, 'Runtime health check failed');
-    }
-  }, 5 * 60 * 1000);
+    },
+    5 * 60 * 1000,
+  );
 
   return () => clearInterval(interval);
 }

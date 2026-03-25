@@ -163,11 +163,20 @@ export async function configureJailNetwork(
 ): Promise<void> {
   const sudoExec = getSudoExec();
   await sudoExec([
-    'jexec', jailName, 'ifconfig',
-    epairInfo.jailIface, `${epairInfo.jailIP}/${epairInfo.netmask}`, 'up',
+    'jexec',
+    jailName,
+    'ifconfig',
+    epairInfo.jailIface,
+    `${epairInfo.jailIP}/${epairInfo.netmask}`,
+    'up',
   ]);
   await sudoExec([
-    'jexec', jailName, 'route', 'add', 'default', epairInfo.hostIP,
+    'jexec',
+    jailName,
+    'route',
+    'add',
+    'default',
+    epairInfo.hostIP,
   ]);
   logger.info(
     {

@@ -9,7 +9,12 @@ import { readEnvFile } from './env.js';
 const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER']);
 
 /** Clamp a parsed integer to [min, max], falling back to defaultVal on NaN */
-function clampInt(raw: string | undefined, defaultVal: number, min: number, max: number): number {
+function clampInt(
+  raw: string | undefined,
+  defaultVal: number,
+  min: number,
+  max: number,
+): number {
   const parsed = parseInt(raw || String(defaultVal), 10);
   return Math.min(max, Math.max(min, isNaN(parsed) ? defaultVal : parsed));
 }
@@ -46,20 +51,35 @@ export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
 export const CONTAINER_TIMEOUT = clampInt(
-  process.env.CONTAINER_TIMEOUT, 1800000, 60000, 7200000,
+  process.env.CONTAINER_TIMEOUT,
+  1800000,
+  60000,
+  7200000,
 ); // 30min default, min 1min, max 2hr
 export const CONTAINER_MAX_OUTPUT_SIZE = clampInt(
-  process.env.CONTAINER_MAX_OUTPUT_SIZE, 10485760, 1048576, 104857600,
+  process.env.CONTAINER_MAX_OUTPUT_SIZE,
+  10485760,
+  1048576,
+  104857600,
 ); // 10MB default, min 1MB, max 100MB
 export const CREDENTIAL_PROXY_PORT = clampInt(
-  process.env.CREDENTIAL_PROXY_PORT, 3001, 1024, 65535,
+  process.env.CREDENTIAL_PROXY_PORT,
+  3001,
+  1024,
+  65535,
 );
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = clampInt(
-  process.env.IDLE_TIMEOUT, 1800000, 60000, 7200000,
+  process.env.IDLE_TIMEOUT,
+  1800000,
+  60000,
+  7200000,
 ); // 30min default, min 1min, max 2hr
 export const MAX_CONCURRENT_CONTAINERS = clampInt(
-  process.env.MAX_CONCURRENT_CONTAINERS, 5, 1, 50,
+  process.env.MAX_CONCURRENT_CONTAINERS,
+  5,
+  1,
+  50,
 );
 
 function escapeRegex(str: string): string {
@@ -77,21 +97,29 @@ export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 // Health and metrics configuration
-export const HEALTH_ENABLED =
-  (process.env.HEALTH_ENABLED || 'true') === 'true'; // Always on by default
+export const HEALTH_ENABLED = (process.env.HEALTH_ENABLED || 'true') === 'true'; // Always on by default
 export const METRICS_ENABLED =
   (process.env.METRICS_ENABLED || 'false') === 'true'; // Opt-in
 export const METRICS_PORT = clampInt(
-  process.env.METRICS_PORT, 9090, 1024, 65535,
+  process.env.METRICS_PORT,
+  9090,
+  1024,
+  65535,
 );
 
 // Log rotation configuration for jail/container logs
 export const LOG_ROTATION_SIZE = process.env.LOG_ROTATION_SIZE || '10M'; // Rotate when file reaches this size
 export const LOG_ROTATION_MAX_FILES = clampInt(
-  process.env.LOG_ROTATION_MAX_FILES, 5, 1, 100,
+  process.env.LOG_ROTATION_MAX_FILES,
+  5,
+  1,
+  100,
 );
 export const LOG_ROTATION_COMPRESS =
   (process.env.LOG_ROTATION_COMPRESS || 'true') === 'true'; // Compress rotated files
 export const LOG_RETENTION_DAYS = clampInt(
-  process.env.LOG_RETENTION_DAYS, 30, 1, 365,
+  process.env.LOG_RETENTION_DAYS,
+  30,
+  1,
+  365,
 );

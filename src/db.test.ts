@@ -499,7 +499,11 @@ describe('container_config Zod validation', () => {
       added_at: '2024-01-01T00:00:00.000Z',
       containerConfig: {
         additionalMounts: [
-          { hostPath: '/data/shared', containerPath: '/workspace/extra/shared', readonly: true },
+          {
+            hostPath: '/data/shared',
+            containerPath: '/workspace/extra/shared',
+            readonly: true,
+          },
         ],
       },
     });
@@ -507,7 +511,9 @@ describe('container_config Zod validation', () => {
     const group = getRegisteredGroup('cfg@g.us');
     expect(group).toBeDefined();
     expect(group!.containerConfig?.additionalMounts).toHaveLength(1);
-    expect(group!.containerConfig!.additionalMounts![0].hostPath).toBe('/data/shared');
+    expect(group!.containerConfig!.additionalMounts![0].hostPath).toBe(
+      '/data/shared',
+    );
   });
 
   it('accepts container_config with extra passthrough fields', () => {
@@ -566,7 +572,9 @@ describe('backupDatabase', () => {
     storeChatMetadata('group@g.us', '2024-01-01T00:00:00.000Z');
     await backupDatabase();
     const backupDir = path.join(process.cwd(), 'store', 'backups');
-    const files = fs.readdirSync(backupDir).filter((f) => f.startsWith('messages-'));
+    const files = fs
+      .readdirSync(backupDir)
+      .filter((f) => f.startsWith('messages-'));
     expect(files.length).toBeGreaterThanOrEqual(1);
     // Cleanup
     for (const f of files) {

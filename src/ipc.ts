@@ -79,7 +79,10 @@ export function startIpcWatcher(deps: IpcDeps): void {
             try {
               const stat = fs.statSync(filePath);
               if (stat.size > IPC_MAX_FILE_SIZE) {
-                logger.warn({ file: filePath, size: stat.size }, 'IPC file too large, skipping');
+                logger.warn(
+                  { file: filePath, size: stat.size },
+                  'IPC file too large, skipping',
+                );
                 fs.unlinkSync(filePath);
                 continue;
               }
@@ -114,7 +117,9 @@ export function startIpcWatcher(deps: IpcDeps): void {
               const errorDir = path.join(ipcBaseDir, 'errors');
               fs.mkdirSync(errorDir, { recursive: true });
               // Move from processing (or original) to errors
-              const sourcePath = fs.existsSync(processingPath) ? processingPath : filePath;
+              const sourcePath = fs.existsSync(processingPath)
+                ? processingPath
+                : filePath;
               if (fs.existsSync(sourcePath)) {
                 fs.renameSync(
                   sourcePath,
@@ -145,7 +150,10 @@ export function startIpcWatcher(deps: IpcDeps): void {
             try {
               const stat = fs.statSync(filePath);
               if (stat.size > IPC_MAX_FILE_SIZE) {
-                logger.warn({ file: filePath, size: stat.size }, 'IPC file too large, skipping');
+                logger.warn(
+                  { file: filePath, size: stat.size },
+                  'IPC file too large, skipping',
+                );
                 fs.unlinkSync(filePath);
                 continue;
               }
@@ -162,7 +170,9 @@ export function startIpcWatcher(deps: IpcDeps): void {
               );
               const errorDir = path.join(ipcBaseDir, 'errors');
               fs.mkdirSync(errorDir, { recursive: true });
-              const sourcePath = fs.existsSync(processingPath) ? processingPath : filePath;
+              const sourcePath = fs.existsSync(processingPath)
+                ? processingPath
+                : filePath;
               if (fs.existsSync(sourcePath)) {
                 fs.renameSync(
                   sourcePath,

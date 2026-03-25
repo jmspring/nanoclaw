@@ -133,10 +133,14 @@ async function applyRctlLimits(jailName: string): Promise<void> {
 
   try {
     await sudoExec([
-      'rctl', '-a', `jail:${jailName}:memoryuse:deny=${limits.memoryuse}`,
+      'rctl',
+      '-a',
+      `jail:${jailName}:memoryuse:deny=${limits.memoryuse}`,
     ]);
     await sudoExec([
-      'rctl', '-a', `jail:${jailName}:maxproc:deny=${limits.maxproc}`,
+      'rctl',
+      '-a',
+      `jail:${jailName}:maxproc:deny=${limits.maxproc}`,
     ]);
     await sudoExec(['rctl', '-a', `jail:${jailName}:pcpu:deny=${limits.pcpu}`]);
     logger.info({ jailName, limits }, 'Applied rctl limits');
@@ -286,10 +290,17 @@ export async function createJail(
 
     // Create .claude directory and .claude.json for Claude Code
     await sudoExec(['mkdir', '-p', `${jailPath}/home/node/.claude`]);
-    const tmpClaudeJson = path.join('/tmp', `nanoclaw-claude-json-${crypto.randomUUID()}`);
+    const tmpClaudeJson = path.join(
+      '/tmp',
+      `nanoclaw-claude-json-${crypto.randomUUID()}`,
+    );
     fs.writeFileSync(tmpClaudeJson, '{}');
     try {
-      await sudoExec(['cp', tmpClaudeJson, `${jailPath}/home/node/.claude.json`]);
+      await sudoExec([
+        'cp',
+        tmpClaudeJson,
+        `${jailPath}/home/node/.claude.json`,
+      ]);
     } finally {
       fs.unlinkSync(tmpClaudeJson);
     }
@@ -464,7 +475,7 @@ export async function cleanupJail(
   const errors = [];
   const epairNum =
     JAIL_CONFIG.networkMode === 'restricted'
-      ? getAssignedEpair(groupId) ?? null
+      ? (getAssignedEpair(groupId) ?? null)
       : null;
 
   try {
@@ -489,7 +500,9 @@ export async function cleanupJail(
               throw new Error('Jail still running after stop');
             }
           },
-          2, 500, 2000,
+          2,
+          500,
+          2000,
         );
         logCleanupAudit('STOP_JAIL', jailName, 'SUCCESS');
       } catch (error) {
@@ -501,8 +514,12 @@ export async function cleanupJail(
     if (epairNum !== null) {
       try {
         await retryWithBackoff(
-          async () => { await releaseEpair(groupId); },
-          2, 200, 1000,
+          async () => {
+            await releaseEpair(groupId);
+          },
+          2,
+          200,
+          1000,
         );
         logCleanupAudit('RELEASE_EPAIR', jailName, 'SUCCESS');
       } catch (error) {
@@ -538,7 +555,9 @@ export async function cleanupJail(
               throw new Error('Dataset still exists after destroy');
             }
           },
-          2, 500, 3000,
+          2,
+          500,
+          3000,
         );
         logCleanupAudit('DESTROY_DATASET', jailName, 'SUCCESS');
       } catch (error) {
@@ -567,7 +586,12 @@ export async function cleanupJail(
       }
     }
   } catch (unexpectedError) {
-    logCleanupAudit('CLEANUP_UNEXPECTED_ERROR', jailName, 'FAILED', unexpectedError);
+    logCleanupAudit(
+      'CLEANUP_UNEXPECTED_ERROR',
+      jailName,
+      'FAILED',
+      unexpectedError,
+    );
     errors.push(unexpectedError as Error);
   } finally {
     // Always clean up tokens and tracking, regardless of errors above
@@ -581,7 +605,12 @@ export async function cleanupJail(
 
     if (errors.length > 0) {
       logger.warn(
-        { jailName, groupId, errorCount: errors.length, errors: errors.map(e => e.message) },
+        {
+          jailName,
+          groupId,
+          errorCount: errors.length,
+          errors: errors.map((e) => e.message),
+        },
         'Jail cleanup completed with errors',
       );
       logCleanupAudit('CLEANUP_END', jailName, 'PARTIAL');

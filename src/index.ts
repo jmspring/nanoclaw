@@ -440,7 +440,10 @@ async function runAgent(
         'Container agent error',
       );
       consecutiveAgentFailures++;
-      if (consecutiveAgentFailures === AGENT_FAILURE_THRESHOLD && adminAlertFn) {
+      if (
+        consecutiveAgentFailures === AGENT_FAILURE_THRESHOLD &&
+        adminAlertFn
+      ) {
         adminAlertFn(
           `${AGENT_FAILURE_THRESHOLD} consecutive agent failures detected. Check logs for details.`,
         );
@@ -782,11 +785,14 @@ async function main(): Promise<void> {
   ); // 24 hours
 
   // Periodic database backup (runs daily)
-  const dbBackupInterval = setInterval(() => {
-    backupDatabase().catch((err) => {
-      logger.warn({ err }, 'Database backup failed');
-    });
-  }, 24 * 60 * 60 * 1000);
+  const dbBackupInterval = setInterval(
+    () => {
+      backupDatabase().catch((err) => {
+        logger.warn({ err }, 'Database backup failed');
+      });
+    },
+    24 * 60 * 60 * 1000,
+  );
 
   // Clean up on shutdown
   const originalShutdown = shutdown;

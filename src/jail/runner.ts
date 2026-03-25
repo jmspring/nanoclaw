@@ -13,7 +13,10 @@ import {
   DATA_DIR,
   TIMEZONE,
 } from '../config.js';
-import { resolveGroupFolderPath, resolveGroupIpcPath } from '../group-folder.js';
+import {
+  resolveGroupFolderPath,
+  resolveGroupIpcPath,
+} from '../group-folder.js';
 import { detectAuthMode } from '../credential-proxy.js';
 import { validateAdditionalMounts } from '../mount-security.js';
 import type { RegisteredGroup } from '../types.js';

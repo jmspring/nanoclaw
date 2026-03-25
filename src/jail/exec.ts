@@ -5,7 +5,11 @@ import { execFileSync, spawn, ChildProcess } from 'child_process';
 import { logger } from '../logger.js';
 import { JAIL_QUICK_OP_TIMEOUT } from './config.js';
 import { getJailName, isJailRunning } from './lifecycle.js';
-import type { ExecResult, ExecInJailOptions, SpawnInJailOptions } from './types.js';
+import type {
+  ExecResult,
+  ExecInJailOptions,
+  SpawnInJailOptions,
+} from './types.js';
 
 /**
  * Execute a command inside a jail.
