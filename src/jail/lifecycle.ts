@@ -228,8 +228,13 @@ export async function createJailWithPaths(
 ): Promise<JailCreationResult> {
   ensureHostDirectories(paths);
   const mounts = buildJailMounts(paths);
-  const jailName = await createJail(groupId, mounts, traceId, tracedLogger);
-  return { jailName, mounts };
+  const { jailName, epairInfo } = await createJail(
+    groupId,
+    mounts,
+    traceId,
+    tracedLogger,
+  );
+  return { jailName, mounts, epairInfo: epairInfo ?? undefined };
 }
 
 /**
@@ -240,7 +245,7 @@ export async function createJail(
   mounts: JailMount[] = [],
   traceId?: string,
   tracedLogger?: pino.Logger,
-): Promise<string> {
+): Promise<{ jailName: string; epairInfo: EpairInfo | null }> {
   const sudoExec = getSudoExec();
   const log = tracedLogger || logger;
   const jailName = getJailName(groupId);
@@ -371,7 +376,7 @@ ${networkConfig}
     } catch {
       // Metrics module may not be available
     }
-    return jailName;
+    return { jailName, epairInfo };
   } catch (error) {
     try {
       const { incrementJailCreateCounter } = await import('./metrics.js');

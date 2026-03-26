@@ -180,6 +180,10 @@ export async function runJailAgent(
     jailName = result.jailName;
     jailMounts = result.mounts;
 
+    // Use per-jail gateway IP for credential proxy (each jail has its own epair)
+    const hostIP = result.epairInfo?.hostIP ?? jailConfig.jailHostIP;
+    env.ANTHROPIC_BASE_URL = `http://${hostIP}:${CREDENTIAL_PROXY_PORT}`;
+
     jailLifecycle.trackJailTempFile(group.folder, '/tmp/dist');
     jailLifecycle.trackJailTempFile(group.folder, '/tmp/input.json');
 
