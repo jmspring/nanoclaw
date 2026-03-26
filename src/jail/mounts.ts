@@ -77,11 +77,29 @@ export function buildJailMounts(paths: JailMountPaths): JailMount[] {
     });
   }
 
+  // Shadow .env so the agent cannot read secrets from the mounted project root
+  if (paths.envShadowPath && paths.projectPath) {
+    mounts.push({
+      hostPath: paths.envShadowPath,
+      jailPath: `${JAIL_MOUNT_LAYOUT.project}/.env`,
+      readonly: true,
+    });
+  }
+
   if (paths.groupPath) {
     mounts.push({
       hostPath: paths.groupPath,
       jailPath: JAIL_MOUNT_LAYOUT.group,
       readonly: false,
+    });
+  }
+
+  // Global memory directory (read-only for non-main groups)
+  if (paths.globalPath) {
+    mounts.push({
+      hostPath: paths.globalPath,
+      jailPath: JAIL_MOUNT_LAYOUT.global,
+      readonly: true,
     });
   }
 

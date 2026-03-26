@@ -14,9 +14,11 @@ export interface JailMount {
 export interface JailMountPaths {
   projectPath: string | null;
   groupPath: string;
+  globalPath?: string | null;
   ipcPath: string;
   claudeSessionPath: string;
   agentRunnerPath: string;
+  envShadowPath?: string | null;
   additionalMounts?: Array<{
     hostPath: string;
     jailPath: string;
