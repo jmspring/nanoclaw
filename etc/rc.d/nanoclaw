@@ -1,13 +1,13 @@
 #!/bin/sh
 #
 # PROVIDE: nanoclaw
-# REQUIRE: LOGIN NETWORKING
+# REQUIRE: LOGIN NETWORKING pf
 # KEYWORD: shutdown
 #
 # Add the following lines to /etc/rc.conf to enable nanoclaw:
 #
 #   nanoclaw_enable="YES"
-#   nanoclaw_user="jims"            # (default: jims)
+#   nanoclaw_user="nanoclaw"         # (default: nanoclaw)
 #   nanoclaw_dir="/path/to/src"     # (default: /home/${nanoclaw_user}/code/nanoclaw/src)
 #
 
@@ -19,11 +19,14 @@ rcvar="${name}_enable"
 load_rc_config $name
 
 : ${nanoclaw_enable:="NO"}
-: ${nanoclaw_user:="jims"}
+: ${nanoclaw_user:="nanoclaw"}
 : ${nanoclaw_dir:="/home/${nanoclaw_user}/code/nanoclaw/src"}
+
+required_dirs="${nanoclaw_dir}"
+required_files="${nanoclaw_dir}/dist/index.js ${nanoclaw_dir}/.env"
 
 pidfile="/var/run/${name}.pid"
 command="/usr/sbin/daemon"
-command_args="-f -p ${pidfile} -u ${nanoclaw_user} -o /var/log/nanoclaw.log /usr/local/bin/node ${nanoclaw_dir}/dist/index.js"
+command_args="-f -r 5 -p ${pidfile} -u ${nanoclaw_user} -o /var/log/nanoclaw.log /usr/local/bin/node ${nanoclaw_dir}/dist/index.js"
 
 run_rc_command "$@"
