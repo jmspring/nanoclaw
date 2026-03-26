@@ -1,6 +1,6 @@
 ---
 id: src-ekso
-status: open
+status: closed
 deps: [src-w081]
 links: []
 created: 2026-03-13T21:03:16Z

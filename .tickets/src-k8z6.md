@@ -1,6 +1,6 @@
 ---
 id: src-k8z6
-status: open
+status: closed
 deps: [src-e9mq]
 links: []
 created: 2026-03-13T21:03:16Z

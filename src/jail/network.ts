@@ -132,7 +132,7 @@ export async function createEpair(groupId: string): Promise<EpairInfo> {
 
   if (epairNum < 0 || epairNum > 255) {
     throw new Error(
-      `Epair number ${epairNum} exceeds /24 pool capacity (0-255)`,
+      `Epair number ${epairNum} exceeds /16 pool capacity (0-255)`,
     );
   }
 
@@ -215,6 +215,9 @@ export async function releaseEpair(groupId: string): Promise<void> {
   }
 }
 
+/** DNS servers that match the pf trusted_dns macro in etc/pf-nanoclaw.conf. */
+export const TRUSTED_DNS_SERVERS = ['8.8.8.8', '1.1.1.1'];
+
 /**
  * Setup resolv.conf in the jail for DNS resolution.
  */
@@ -223,15 +226,19 @@ export async function setupJailResolv(jailPath: string): Promise<void> {
   const resolvPath = path.join(jailPath, 'etc', 'resolv.conf');
 
   try {
-    const hostResolv = fs.readFileSync('/etc/resolv.conf', 'utf-8');
+    const resolvContent =
+      TRUSTED_DNS_SERVERS.map((s) => `nameserver ${s}`).join('\n') + '\n';
     const tmpFile = path.join('/tmp', `nanoclaw-resolv-${crypto.randomUUID()}`);
-    fs.writeFileSync(tmpFile, hostResolv);
+    fs.writeFileSync(tmpFile, resolvContent);
     try {
       await sudoExec(['cp', tmpFile, resolvPath]);
     } finally {
       fs.unlinkSync(tmpFile);
     }
-    logger.debug({ jailPath, resolvPath }, 'Copied host resolv.conf to jail');
+    logger.debug(
+      { jailPath, resolvPath, servers: TRUSTED_DNS_SERVERS },
+      'Wrote jail resolv.conf with trusted DNS servers',
+    );
   } catch (error) {
     logger.warn(
       { jailPath, resolvPath, err: error },
