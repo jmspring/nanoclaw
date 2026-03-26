@@ -17,6 +17,7 @@ export interface JailMountPaths {
   ipcPath: string;
   claudeSessionPath: string;
   agentRunnerPath: string;
+  envShadowPath?: string | null;
   additionalMounts?: Array<{
     hostPath: string;
     jailPath: string;
