@@ -268,7 +268,7 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode || !isRoot || !hasPfTables)(
       );
 
       it(
-        'cannot reach DNS on TCP (only UDP allowed)',
+        'can reach DNS on TCP (pf allows both UDP and TCP port 53)',
         async () => {
           const result = await execInJail(
             GROUP_ID_1,
@@ -276,8 +276,8 @@ describe.skipIf(!isFreeBSD || !isRestrictedMode || !isRoot || !hasPfTables)(
             { timeout: 10000 },
           );
 
-          // Should fail - pf only allows UDP DNS
-          expect(result.code).not.toBe(0);
+          // pf allows both UDP and TCP to trusted DNS servers (port 53)
+          expect(result.code).toBe(0);
         },
         TEST_TIMEOUT,
       );
