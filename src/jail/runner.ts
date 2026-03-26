@@ -11,6 +11,7 @@ import {
   CONTAINER_TIMEOUT,
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
+  GROUPS_DIR,
   TIMEZONE,
 } from '../config.js';
 import {
@@ -121,9 +122,20 @@ function buildJailMountPaths(
     }
   }
 
+  // Global memory directory (read-only for non-main groups)
+  // Matches Docker runner behavior: non-main groups can read shared CLAUDE.md
+  let globalPath: string | null = null;
+  if (!isMain) {
+    const globalDir = path.join(GROUPS_DIR, 'global');
+    if (fs.existsSync(globalDir)) {
+      globalPath = globalDir;
+    }
+  }
+
   return {
     projectPath: isMain ? projectRoot : null,
     groupPath: groupDir,
+    globalPath,
     ipcPath: groupIpcDir,
     claudeSessionPath: groupSessionsDir,
     agentRunnerPath: agentRunnerSrc,
