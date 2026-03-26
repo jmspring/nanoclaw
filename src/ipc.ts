@@ -3,7 +3,7 @@ import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
 
-import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
+import { DATA_DIR, GROUPS_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -491,6 +491,15 @@ export async function processTaskIpc(
           containerConfig: data.containerConfig,
           requiresTrigger: data.requiresTrigger,
         });
+
+        // Create CLAUDE.md from template if it doesn't exist
+        const groupDir = path.join(GROUPS_DIR, data.folder);
+        fs.mkdirSync(groupDir, { recursive: true });
+        const claudeMdPath = path.join(groupDir, 'CLAUDE.md');
+        if (!fs.existsSync(claudeMdPath)) {
+          const template = `# ${data.name}\n\nGroup memory and instructions for ${data.name}.\n`;
+          fs.writeFileSync(claudeMdPath, template);
+        }
       } else {
         logger.warn(
           { data },

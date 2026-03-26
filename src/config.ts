@@ -88,15 +88,28 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export const TRIGGER_PATTERN = new RegExp(
-  `^@${escapeRegex(ASSISTANT_NAME)}\\b`,
-  'i',
-);
+/** Build a trigger RegExp from an assistant/bot name. */
+export function buildTriggerPattern(name: string): RegExp {
+  return new RegExp(`^@${escapeRegex(name)}\\b`, 'i');
+}
+
+export const TRIGGER_PATTERN = buildTriggerPattern(ASSISTANT_NAME);
+
+/** Check whether a timezone string is a valid IANA timezone. */
+function isValidTimezone(tz: string): boolean {
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // Timezone for scheduled tasks (cron expressions, etc.)
-// Uses system timezone by default
-export const TIMEZONE =
+// Uses system timezone by default; falls back to UTC for invalid POSIX-style TZ values
+const rawTZ =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+export const TIMEZONE = isValidTimezone(rawTZ) ? rawTZ : 'UTC';
 
 // Health and metrics configuration
 export const HEALTH_ENABLED = (process.env.HEALTH_ENABLED || 'true') === 'true'; // Always on by default

@@ -30,6 +30,7 @@ export interface AllowedRoot {
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
+  triggerPattern?: string; // Custom trigger name (overrides global ASSISTANT_NAME)
 }
 
 export interface RegisteredGroup {
