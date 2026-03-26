@@ -112,12 +112,22 @@ function buildJailMountPaths(
     }));
   }
 
+  // Shadow .env to prevent agent from reading secrets (matches Docker runner behavior)
+  let envShadowPath: string | null = null;
+  if (isMain) {
+    const envFile = path.join(projectRoot, '.env');
+    if (fs.existsSync(envFile)) {
+      envShadowPath = '/dev/null';
+    }
+  }
+
   return {
     projectPath: isMain ? projectRoot : null,
     groupPath: groupDir,
     ipcPath: groupIpcDir,
     claudeSessionPath: groupSessionsDir,
     agentRunnerPath: agentRunnerSrc,
+    envShadowPath,
     additionalMounts: validatedAdditionalMounts,
   };
 }
