@@ -7,7 +7,9 @@
 
 // slack
 
-// telegram
-import './telegram.js';
+// telegram (optional — requires grammy package)
+import('./telegram.js').catch(() => {
+  // grammy not installed — Telegram channel unavailable
+});
 
 // whatsapp
