@@ -132,7 +132,7 @@ export async function createEpair(groupId: string): Promise<EpairInfo> {
 
   if (epairNum < 0 || epairNum > 255) {
     throw new Error(
-      `Epair number ${epairNum} exceeds /24 pool capacity (0-255)`,
+      `Epair number ${epairNum} exceeds /16 pool capacity (0-255)`,
     );
   }
 
