@@ -28,6 +28,7 @@ export interface JailMountPaths {
 export interface JailCreationResult {
   jailName: string;
   mounts: JailMount[];
+  epairInfo?: EpairInfo;
 }
 
 /** Execution result from execInJail */

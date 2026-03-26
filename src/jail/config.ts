@@ -70,7 +70,9 @@ export const JAIL_CONFIG: JailConfig = {
     (process.env.NANOCLAW_JAIL_NETWORK_MODE as 'inherit' | 'restricted') ||
     'restricted',
   jailSubnet,
+  /** @deprecated Use epairInfo.hostIP from jail creation result instead. */
   jailHostIP: `${jailSubnet}.0.1`,
+  /** @deprecated Use epairInfo.jailIP from jail creation result instead. */
   jailIP: `${jailSubnet}.0.2`,
   jailNetmask: '30',
   resourceLimits: {
