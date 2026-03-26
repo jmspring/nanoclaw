@@ -108,6 +108,7 @@ export const MAX_CONCURRENT_JAILS = Math.min(
 export const JAIL_MOUNT_LAYOUT = {
   project: '/workspace/project',
   group: '/workspace/group',
+  global: '/workspace/global',
   ipc: '/workspace/ipc',
   claudeSession: '/home/node/.claude',
   agentRunner: '/app/src',

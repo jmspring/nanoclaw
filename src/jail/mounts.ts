@@ -85,6 +85,15 @@ export function buildJailMounts(paths: JailMountPaths): JailMount[] {
     });
   }
 
+  // Global memory directory (read-only for non-main groups)
+  if (paths.globalPath) {
+    mounts.push({
+      hostPath: paths.globalPath,
+      jailPath: JAIL_MOUNT_LAYOUT.global,
+      readonly: true,
+    });
+  }
+
   if (paths.ipcPath) {
     mounts.push({
       hostPath: paths.ipcPath,
