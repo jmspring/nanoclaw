@@ -666,6 +666,31 @@ EOF
 }
 
 # =============================================================================
+# Section 7b: Install devfs.rules
+# =============================================================================
+
+install_devfs_rules() {
+    DEVFS_SRC="$NANOCLAW_SRC/etc/devfs.rules"
+    if [ ! -f "$DEVFS_SRC" ]; then
+        log_info "devfs.rules not found in source — skipping"
+        return 0
+    fi
+
+    DEVFS_DEST="/etc/devfs.rules"
+    if [ -f "$DEVFS_DEST" ] && cmp -s "$DEVFS_SRC" "$DEVFS_DEST"; then
+        log_skip "devfs.rules already installed and up to date"
+    else
+        cp "$DEVFS_SRC" "$DEVFS_DEST"
+        log_success "devfs.rules installed at $DEVFS_DEST"
+    fi
+
+    if service devfs status >/dev/null 2>&1; then
+        service devfs restart
+        log_success "devfs rules reloaded"
+    fi
+}
+
+# =============================================================================
 # Section 8: Clone and Configure NanoClaw
 # =============================================================================
 clone_nanoclaw() {
@@ -892,6 +917,7 @@ main() {
     setup_jail_template
     setup_pf
     clone_nanoclaw
+    install_devfs_rules
     setup_rcd_service
     print_summary
 }
