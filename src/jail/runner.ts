@@ -14,6 +14,11 @@ import {
   TIMEZONE,
 } from '../config.js';
 import {
+  getGroupSessionsDir,
+  ensureGroupSettings,
+  syncContainerSkills,
+} from '../runner-setup.js';
+import {
   resolveGroupFolderPath,
   resolveGroupIpcPath,
 } from '../group-folder.js';
@@ -40,14 +45,8 @@ function buildJailMountPaths(
   const groupDir = resolveGroupFolderPath(group.folder);
   const groupIpcDir = resolveGroupIpcPath(group.folder);
 
-  const groupSessionsDir = path.join(
-    DATA_DIR,
-    'sessions',
-    group.folder,
-    '.claude',
-  );
-
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
+  const groupSessionsDir = getGroupSessionsDir(group.folder);
+  ensureGroupSettings(groupSessionsDir);
 
   // Set permissions for shared host/jail access (mode 2775, group wheel)
   try {
@@ -57,37 +56,8 @@ function buildJailMountPaths(
   } catch {
     // Non-fatal: permissions will be set by ensureHostDirectories in jail module
   }
-  const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
-        {
-          env: {
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-          },
-        },
-        null,
-        2,
-      ) + '\n',
-    );
-  }
 
-  // Sync skills
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
-  const skillsDst = path.join(groupSessionsDir, 'skills');
-  if (fs.existsSync(skillsSrc)) {
-    for (const skillDir of fs.readdirSync(skillsSrc)) {
-      const srcDir = path.join(skillsSrc, skillDir);
-      if (!fs.statSync(srcDir).isDirectory()) continue;
-      const dstDir = path.join(skillsDst, skillDir);
-      try {
-        fs.cpSync(srcDir, dstDir, { recursive: true });
-      } catch {}
-    }
-  }
+  syncContainerSkills(groupSessionsDir);
 
   const agentRunnerSrc = path.join(
     projectRoot,
