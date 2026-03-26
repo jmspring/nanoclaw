@@ -61,6 +61,7 @@ export function revokeJailToken(token: string): void {
 
 const RATE_LIMIT_MAX = 60;
 const RATE_LIMIT_WINDOW_MS = 60_000;
+const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 const rateLimitMap = new Map<string, { count: number; windowStart: number }>();
 
 /** Check and update rate limit for an IP. Returns true if the request is allowed. */
@@ -150,8 +151,27 @@ export function startCredentialProxy(
       }
 
       const chunks: Buffer[] = [];
-      req.on('data', (c) => chunks.push(c));
+      let bodySize = 0;
+      let aborted = false;
+      req.on('data', (c: Buffer) => {
+        bodySize += c.length;
+        if (bodySize > MAX_BODY_BYTES) {
+          if (!aborted) {
+            aborted = true;
+            logger.warn(
+              { remoteAddr, url: req.url, bodySize },
+              'Credential proxy: request body too large',
+            );
+            res.writeHead(413);
+            res.end('Payload Too Large');
+            req.destroy();
+          }
+          return;
+        }
+        chunks.push(c);
+      });
       req.on('end', () => {
+        if (aborted) return;
         const body = Buffer.concat(chunks);
         const headers: Record<string, string | number | string[] | undefined> =
           {

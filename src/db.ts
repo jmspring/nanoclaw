@@ -169,6 +169,8 @@ export function initDatabase(): void {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
   db = new Database(DB_PATH);
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
   createSchema(db);
 
   // Migrate from JSON files if they exist
