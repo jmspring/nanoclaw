@@ -638,12 +638,112 @@ export async function cleanupJail(
 
 /**
  * Clean up a jail identified by its full jail name (e.g. "nanoclaw_mygroup_abc123").
- * Derives the groupId from the jail name and delegates to cleanupJail(),
- * which handles stop, unmount, dataset destroy, token revocation, etc.
+ * Derives paths directly from the jail name, bypassing getJailName() re-hashing.
+ * Used by orphan cleanup and shutdown paths where the original groupId is unknown.
  */
 export async function cleanupByJailName(jailName: string): Promise<void> {
-  const groupId = jailName.replace(/^nanoclaw_/, '');
-  await cleanupJail(groupId);
+  const dataset = `${JAIL_CONFIG.jailsDataset}/${jailName}`;
+  const jailPath = path.join(JAIL_CONFIG.jailsPath, jailName);
+  const fstabPath = path.join(JAIL_CONFIG.jailsPath, `${jailName}.fstab`);
+  const confPath = path.join(JAIL_CONFIG.jailsPath, `${jailName}.conf`);
+  const sudoExec = getSudoExec();
+
+  logger.info({ jailName }, 'Cleaning up jail by name (orphan/shutdown path)');
+  logCleanupAudit('CLEANUP_START', jailName, 'INFO');
+
+  let mounts: JailMount[] = [];
+  try {
+    const mountOutput = execFileSync('mount', ['-t', 'nullfs'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    mounts = mountOutput
+      .split('\n')
+      .filter((line) => line.includes(jailPath))
+      .map((line) => {
+        const match = line.match(/^(.+?) on (.+?) \(/);
+        if (!match) return null;
+        return {
+          hostPath: match[1],
+          jailPath: match[2].replace(jailPath, ''),
+          readonly: false,
+        };
+      })
+      .filter((m): m is JailMount => m !== null);
+  } catch {
+    /* continue with empty list */
+  }
+
+  const errors: Error[] = [];
+
+  try {
+    if (isJailRunning(jailName)) {
+      try {
+        await sudoExec(['jail', '-r', jailName], {
+          timeout: JAIL_STOP_TIMEOUT,
+        });
+        logCleanupAudit('STOP_JAIL', jailName, 'SUCCESS');
+      } catch (error) {
+        logCleanupAudit('STOP_JAIL', jailName, 'FAILED', error);
+        errors.push(error as Error);
+      }
+    }
+
+    try {
+      await sudoExec(['umount', '-f', path.join(jailPath, 'dev')]);
+    } catch {
+      // Expected if not mounted
+    }
+
+    for (let i = mounts.length - 1; i >= 0; i--) {
+      const mount = mounts[i];
+      const targetPath = path.join(jailPath, mount.jailPath);
+      try {
+        await sudoExec(['umount', '-f', targetPath]);
+      } catch (error) {
+        errors.push(error as Error);
+      }
+    }
+
+    if (datasetExists(dataset)) {
+      try {
+        await sudoExec(['zfs', 'destroy', '-f', '-r', dataset]);
+        logCleanupAudit('DESTROY_DATASET', jailName, 'SUCCESS');
+      } catch (error) {
+        logCleanupAudit('DESTROY_DATASET', jailName, 'FAILED', error);
+        errors.push(error as Error);
+      }
+    }
+
+    for (const filePath of [fstabPath, confPath]) {
+      if (fs.existsSync(filePath)) {
+        try {
+          fs.unlinkSync(filePath);
+        } catch (error) {
+          errors.push(error as Error);
+        }
+      }
+    }
+  } catch (unexpectedError) {
+    logCleanupAudit(
+      'CLEANUP_UNEXPECTED_ERROR',
+      jailName,
+      'FAILED',
+      unexpectedError,
+    );
+    errors.push(unexpectedError as Error);
+  }
+
+  if (errors.length > 0) {
+    logger.warn(
+      { jailName, errorCount: errors.length },
+      'cleanupByJailName completed with errors',
+    );
+    logCleanupAudit('CLEANUP_END', jailName, 'PARTIAL');
+  } else {
+    logger.info({ jailName }, 'cleanupByJailName completed successfully');
+    logCleanupAudit('CLEANUP_END', jailName, 'SUCCESS');
+  }
 }
 
 /** Destroy a jail completely (stop + cleanup). */
@@ -671,6 +771,10 @@ export function isAtJailCapacity(): boolean {
 
 /**
  * Track a jail as active so it won't be cleaned up as an orphan.
+ * Note: This derives an approximate groupId from the jail name.
+ * It will not match the original groupId exactly (due to hash suffix),
+ * but this is acceptable because trackActiveJail is only used during
+ * startup orphan detection where no real groupIds are tracked yet.
  */
 export function trackActiveJail(jailName: string): void {
   const groupId = jailName.replace(/^nanoclaw_/, '');
