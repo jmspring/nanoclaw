@@ -340,6 +340,16 @@ export async function createJail(
   mount.devfs;
   devfs_ruleset = 10;
   securelevel = 3;
+  exec.clean;
+  children.max = 0;
+  allow.raw_sockets = 0;
+  allow.mount = 0;
+  allow.set_hostname = 0;
+  allow.sysvipc = 0;
+  allow.chflags = 0;
+  sysvshm = new;
+  sysvmsg = new;
+  sysvsem = new;
 ${networkConfig}
 }
 `;
