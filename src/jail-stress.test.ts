@@ -55,6 +55,7 @@ function listJailDatasets(prefix: string): string[] {
       .trim()
       .split('\n')
       .filter((line) => line.includes(prefix));
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     return [];
   }
@@ -71,6 +72,7 @@ function listEpairInterfaces(): string[] {
       .trim()
       .split(/\s+/)
       .filter((iface) => /^epair\d+a$/.test(iface));
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     return [];
   }
@@ -82,6 +84,7 @@ function listTempDirs(): string[] {
     return fs
       .readdirSync('/tmp')
       .filter((name) => name.startsWith('nanoclaw-stress-test'));
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     return [];
   }
@@ -161,6 +164,7 @@ describe.skipIf(!isFreeBSD || !isRoot)(
               claudeSessionPath: sessionPath,
               agentRunnerPath: process.cwd(),
             });
+            // eslint-disable-next-line no-catch-all/no-catch-all
           } catch (error) {
             // If creation fails, record and continue to test cleanup
             console.error(`Failed to create jail ${groupId}:`, error);

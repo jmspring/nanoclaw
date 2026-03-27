@@ -28,6 +28,7 @@ function persistEpairState(): void {
     }
     const state = Object.fromEntries(assignedEpairs);
     fs.writeFileSync(EPAIR_STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (error) {
     logger.warn(
       { err: error, file: EPAIR_STATE_FILE },
@@ -51,6 +52,7 @@ export function restoreEpairState(): void {
         { count: assignedEpairs.size, file: EPAIR_STATE_FILE },
         'Restored epair state from disk',
       );
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (error) {
       logger.warn(
         { err: error, file: EPAIR_STATE_FILE },
@@ -91,6 +93,7 @@ export function restoreEpairState(): void {
       { tracked: assignedEpairs.size, existing: existingEpairs.size },
       'Synced epair state with system',
     );
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (error) {
     logger.warn({ err: error }, 'Failed to sync epair state with system');
   }
@@ -197,6 +200,7 @@ export async function destroyEpair(epairNum: number): Promise<void> {
   try {
     await sudoExec(['ifconfig', hostIface, 'destroy']);
     logger.debug({ epairNum, hostIface }, 'Destroyed epair');
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (error) {
     logger.warn({ epairNum, hostIface, err: error }, 'Could not destroy epair');
   }
@@ -238,6 +242,7 @@ export async function setupJailResolv(jailPath: string): Promise<void> {
       { jailPath, resolvPath, servers: TRUSTED_DNS_SERVERS },
       'Wrote jail resolv.conf with trusted DNS servers',
     );
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (error) {
     logger.warn(
       { jailPath, resolvPath, err: error },

@@ -50,6 +50,7 @@ export async function reconnectToRunningJails(): Promise<void> {
       { count: running.length, jails: running },
       'Reconnected to existing running jails',
     );
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (err) {
     logger.warn({ err }, 'Failed to reconnect to running jails');
   }
@@ -59,6 +60,7 @@ export async function reconnectToRunningJails(): Promise<void> {
 export async function shutdownAllJails(): Promise<void> {
   try {
     await cleanupAllJails();
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (err) {
     logger.warn({ err }, 'Failed to clean up jails during shutdown');
   }
@@ -74,6 +76,7 @@ export async function startJailMetrics(config: {
   if (JAIL_CONFIG.networkMode === 'restricted') {
     try {
       execFileSync('pfctl', ['-s', 'info'], { stdio: 'pipe' });
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch {
       logger.warn(
         'pf firewall does not appear to be running. Restricted network mode requires pf rules for jail connectivity. See docs/FREEBSD_JAILS.md.',
@@ -139,6 +142,7 @@ export function startJailHealthChecks(
               );
             }
           }
+          // eslint-disable-next-line no-catch-all/no-catch-all
         } catch {
           // ZFS check failed — skip
         }
@@ -150,11 +154,13 @@ export function startJailHealthChecks(
             stdio: 'pipe',
             timeout: 5000,
           });
+          // eslint-disable-next-line no-catch-all/no-catch-all
         } catch {
           onAlert(
             `Template snapshot missing: ${snapshot}. New jails cannot be created.`,
           );
         }
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (err) {
         logger.debug({ err }, 'Runtime health check failed');
       }

@@ -85,6 +85,7 @@ function checkTemplateSnapshot(
       timeout: 5000,
     });
     return true;
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     return false;
   }
@@ -109,6 +110,7 @@ function getZfsPoolAvailable(poolName: string): number {
     );
     const bytes = parseInt(output.trim(), 10);
     return isNaN(bytes) ? -1 : bytes;
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     return -1;
   }
@@ -127,6 +129,7 @@ function checkPfEnabled(): boolean {
     });
     // Check if output contains "Status: Enabled"
     return output.includes('Status: Enabled');
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     // pf may not be configured or pfctl not available
     return false;
@@ -186,6 +189,7 @@ export async function updateMetrics(
     metricsData.activeJails = getActiveJailCount();
     metricsData.epairUsed = getEpairMetrics().current;
     metricsData.zfsPoolBytesAvail = getZfsPoolAvailable(poolName);
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (err) {
     logger.warn({ err }, 'Failed to update metrics');
   }

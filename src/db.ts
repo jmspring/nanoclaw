@@ -106,6 +106,7 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`,
     );
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     /* column already exists */
   }
@@ -113,6 +114,7 @@ function createSchema(database: Database.Database): void {
   // Add script column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN script TEXT`);
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     /* column already exists */
   }
@@ -126,6 +128,7 @@ function createSchema(database: Database.Database): void {
     database
       .prepare(`UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`)
       .run(`${ASSISTANT_NAME}:%`);
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     /* column already exists */
   }
@@ -139,6 +142,7 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `UPDATE registered_groups SET is_main = 1 WHERE folder = 'main'`,
     );
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     /* column already exists */
   }
@@ -160,6 +164,7 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `UPDATE chats SET channel = 'telegram', is_group = 0 WHERE jid LIKE 'tg:%'`,
     );
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     /* columns already exist */
   }
@@ -631,6 +636,7 @@ export function getRegisteredGroup(
       containerConfig = ContainerConfigSchema.parse(
         JSON.parse(row.container_config),
       );
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (err) {
       logger.warn(
         { jid: row.jid, err },
@@ -697,6 +703,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
         containerConfig = ContainerConfigSchema.parse(
           JSON.parse(row.container_config),
         );
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (err) {
         logger.warn(
           { jid: row.jid, err },
@@ -729,6 +736,7 @@ function migrateJsonState(): void {
       const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
       fs.renameSync(filePath, `${filePath}.migrated`);
       return data;
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch {
       return null;
     }
@@ -771,6 +779,7 @@ function migrateJsonState(): void {
     for (const [jid, group] of Object.entries(groups)) {
       try {
         setRegisteredGroup(jid, group);
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (err) {
         logger.warn(
           { jid, folder: group.folder, err },

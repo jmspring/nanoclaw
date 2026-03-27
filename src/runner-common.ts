@@ -144,6 +144,7 @@ export function handleAgentProcess(
       );
       try {
         await onTimeout();
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (err) {
         log.warn(
           { group: groupName, [runtimeLabel.toLowerCase()]: processLabel, err },
@@ -206,6 +207,7 @@ export function handleAgentProcess(
               // Call onOutput for all markers (including null results)
               // so idle timers start even for "silent" query completions.
               outputChain = outputChain.then(() => onOutput(parsed));
+              // eslint-disable-next-line no-catch-all/no-catch-all
             } catch (err) {
               log.warn(
                 { group: groupName, error: err },
@@ -252,6 +254,7 @@ export function handleAgentProcess(
       // Run cleanup (e.g. jail destruction) before processing result
       try {
         await onClose();
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (err) {
         log.warn(
           { group: groupName, err },
@@ -440,6 +443,7 @@ export function handleAgentProcess(
         );
 
         resolve(output);
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (err) {
         log.error(
           {
@@ -474,6 +478,7 @@ export function handleAgentProcess(
 
       try {
         await onError();
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (cleanupErr) {
         log.warn(
           { group: groupName, cleanupErr },

@@ -45,6 +45,7 @@ export function syncContainerSkills(groupSessionsDir: string): void {
       const dstDir = path.join(skillsDst, skillDir);
       try {
         fs.cpSync(srcDir, dstDir, { recursive: true });
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch {
         // Non-fatal: individual skill copy failure doesn't block container launch
       }
