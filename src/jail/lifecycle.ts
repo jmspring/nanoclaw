@@ -29,7 +29,12 @@ import {
   createMountPoints,
   mountNullfs,
 } from './mounts.js';
-import { logCleanupAudit, retryWithBackoff } from './cleanup.js';
+import {
+  logCleanupAudit,
+  retryWithBackoff,
+  listRunningNanoclawJails,
+} from './cleanup.js';
+import { DATA_DIR } from '../config.js';
 import type {
   JailMount,
   JailMountPaths,
@@ -45,6 +50,92 @@ const jailTokens = new Map<string, string>();
 
 /** Track per-jail temp directories that need cleanup */
 const jailTempDirs = new Map<string, Set<string>>();
+
+/** Path to persistent token state file */
+const TOKEN_STATE_FILE = path.join(DATA_DIR, 'jail-tokens.json');
+
+/**
+ * Persist token state to disk for crash recovery.
+ */
+function persistTokenState(): void {
+  try {
+    const stateDir = path.dirname(TOKEN_STATE_FILE);
+    if (!fs.existsSync(stateDir)) {
+      fs.mkdirSync(stateDir, { recursive: true, mode: 0o755 });
+    }
+    const state = Object.fromEntries(jailTokens);
+    fs.writeFileSync(TOKEN_STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
+    // eslint-disable-next-line no-catch-all/no-catch-all
+  } catch (error) {
+    logger.warn(
+      { err: error, file: TOKEN_STATE_FILE },
+      'Failed to persist token state',
+    );
+  }
+}
+
+/**
+ * Restore token state from disk and sync with actually running jails.
+ */
+export function restoreTokenState(): void {
+  if (!fs.existsSync(TOKEN_STATE_FILE)) {
+    logger.debug('No token state file found — first startup');
+    return;
+  }
+
+  let state: Record<string, string>;
+  try {
+    const data = fs.readFileSync(TOKEN_STATE_FILE, 'utf-8');
+    state = JSON.parse(data) as Record<string, string>;
+    // eslint-disable-next-line no-catch-all/no-catch-all
+  } catch (error) {
+    logger.warn(
+      { err: error, file: TOKEN_STATE_FILE },
+      'Failed to restore token state — corrupt file',
+    );
+    return;
+  }
+
+  const running = listRunningNanoclawJails();
+  const runningSet = new Set(running);
+  let restored = 0;
+  let discarded = 0;
+
+  for (const [groupId, token] of Object.entries(state)) {
+    const jailName = getJailName(groupId);
+    if (runningSet.has(jailName)) {
+      jailTokens.set(groupId, token);
+      registerJailToken(token);
+      restored++;
+    } else {
+      logger.info(
+        { groupId, jailName },
+        'Discarding stale token — jail no longer running',
+      );
+      discarded++;
+    }
+  }
+
+  // Log warnings for running jails with no persisted token
+  for (const name of running) {
+    const matchedGroup = [...jailTokens.entries()].find(
+      ([gid]) => getJailName(gid) === name,
+    );
+    if (!matchedGroup) {
+      logger.warn(
+        { jailName: name },
+        'Orphaned jail with no persisted token — cleanup will handle',
+      );
+    }
+  }
+
+  logger.info(
+    { restored, discarded, file: TOKEN_STATE_FILE },
+    'Restored token state from disk',
+  );
+
+  persistTokenState();
+}
 
 /** Sanitize groupId for use in jail names (alphanumeric + underscore only). */
 export function sanitizeJailName(groupId: string): string {
@@ -366,6 +457,7 @@ ${networkConfig}
     const jailToken = crypto.randomUUID();
     jailTokens.set(groupId, jailToken);
     registerJailToken(jailToken);
+    persistTokenState();
 
     log.info(
       {
@@ -623,6 +715,7 @@ export async function cleanupJail(
     if (token) {
       revokeJailToken(token);
       jailTokens.delete(groupId);
+      persistTokenState();
     }
 
     activeJails.delete(groupId);

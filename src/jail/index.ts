@@ -30,7 +30,11 @@ export { runJailAgent } from './runner.js';
 import { execFileSync } from 'child_process';
 import { logger } from '../logger.js';
 import { JAIL_CONFIG } from './config.js';
-import { getActiveJailCount, trackActiveJail } from './lifecycle.js';
+import {
+  getActiveJailCount,
+  trackActiveJail,
+  restoreTokenState,
+} from './lifecycle.js';
 import { getEpairMetrics } from './network.js';
 import { listRunningNanoclawJails, cleanupAllJails } from './cleanup.js';
 import { startMetricsServer, updateMetrics } from './metrics.js';
@@ -38,6 +42,7 @@ import { startMetricsServer, updateMetrics } from './metrics.js';
 /** Reconnect to jails that survived a process restart. */
 export async function reconnectToRunningJails(): Promise<void> {
   try {
+    restoreTokenState();
     const running = listRunningNanoclawJails();
     if (running.length === 0) {
       logger.debug('No running jails found to reconnect');

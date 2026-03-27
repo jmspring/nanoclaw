@@ -835,6 +835,21 @@ setup_rcd_service() {
     chmod 755 "$RCD_DEST"
     log_success "rc.d script installed at $RCD_DEST"
 
+    # Install newsyslog configuration for log rotation
+    NEWSYSLOG_DIR="/usr/local/etc/newsyslog.conf.d"
+    if [ ! -d "$NEWSYSLOG_DIR" ]; then
+        mkdir -p "$NEWSYSLOG_DIR"
+        log_success "Created $NEWSYSLOG_DIR"
+    fi
+    SRC_NEWSYSLOG="$NANOCLAW_SRC/etc/newsyslog.d/nanoclaw.conf"
+    if [ -f "$SRC_NEWSYSLOG" ]; then
+        # Update owner field to match the configured nanoclaw user
+        sed "s/nanoclaw:wheel/${NANOCLAW_USER}:wheel/" "$SRC_NEWSYSLOG" > "$NEWSYSLOG_DIR/nanoclaw.conf"
+        log_success "Installed newsyslog config at $NEWSYSLOG_DIR/nanoclaw.conf"
+    else
+        log_skip "newsyslog config not found at $SRC_NEWSYSLOG"
+    fi
+
     # Enable the service
     if sysrc -c nanoclaw_enable="YES" 2>/dev/null; then
         log_skip "nanoclaw already enabled in rc.conf"
