@@ -1,5 +1,7 @@
 # NanoClaw Debug Checklist
 
+> **FreeBSD/Jail users**: Jump to [FreeBSD Jails](#freebsd-jails-nanoclaw_runtimejail) for jail-specific debugging.
+
 ## Known Issues (2026-02-08)
 
 ### 1. [FIXED] Resume branches from stale tree position
