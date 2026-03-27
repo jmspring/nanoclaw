@@ -98,6 +98,7 @@ export function isJailRunning(jailName: string): boolean {
       stdio: 'pipe',
     });
     return output.trim().length > 0;
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     return false;
   }
@@ -111,6 +112,7 @@ export async function isJailRunningAsync(jailName: string): Promise<boolean> {
       stdio: 'pipe',
     });
     return result.stdout.trim().length > 0;
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     return false;
   }
@@ -121,6 +123,7 @@ export function datasetExists(dataset: string): boolean {
   try {
     execFileSync('zfs', ['list', '-H', dataset], { stdio: 'pipe' });
     return true;
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     return false;
   }
@@ -144,6 +147,7 @@ async function applyRctlLimits(jailName: string): Promise<void> {
     ]);
     await sudoExec(['rctl', '-a', `jail:${jailName}:pcpu:deny=${limits.pcpu}`]);
     logger.info({ jailName, limits }, 'Applied rctl limits');
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (error) {
     logger.warn({ jailName, err: error }, 'Could not apply rctl limits');
   }
@@ -155,6 +159,7 @@ export async function removeRctlLimits(jailName: string): Promise<void> {
   try {
     await sudoExec(['rctl', '-r', `jail:${jailName}`]);
     logger.debug({ jailName }, 'Removed rctl limits');
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (error) {
     logger.debug(
       { jailName, err: error },
@@ -206,6 +211,7 @@ async function cleanupJailTempFiles(groupId: string): Promise<void> {
         timeout: 5000,
       });
       logger.debug({ groupId, tempPath }, 'Removed jail temp file');
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (error) {
       logger.debug(
         { groupId, tempPath, err: error },
@@ -272,6 +278,7 @@ export async function createJail(
     log.info({ dataset }, 'Dataset exists, destroying first');
     try {
       await sudoExec(['zfs', 'destroy', '-r', dataset]);
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (error) {
       log.warn({ dataset, err: error }, 'Could not destroy existing dataset');
     }
@@ -373,6 +380,7 @@ ${networkConfig}
     try {
       const { incrementJailCreateCounter } = await import('./metrics.js');
       incrementJailCreateCounter(true);
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch {
       // Metrics module may not be available
     }
@@ -381,6 +389,7 @@ ${networkConfig}
     try {
       const { incrementJailCreateCounter } = await import('./metrics.js');
       incrementJailCreateCounter(false);
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch {
       // Metrics module may not be available
     }
@@ -472,6 +481,7 @@ export async function cleanupJail(
         })
         .filter((m): m is JailMount => m !== null);
       mounts = discovered;
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch {
       /* continue with empty list */
     }
@@ -486,6 +496,7 @@ export async function cleanupJail(
   try {
     await cleanupJailTempFiles(groupId);
     logCleanupAudit('CLEANUP_TEMP_FILES', jailName, 'SUCCESS');
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (error) {
     logger.warn(
       { jailName, groupId, err: error },
@@ -510,6 +521,7 @@ export async function cleanupJail(
           2000,
         );
         logCleanupAudit('STOP_JAIL', jailName, 'SUCCESS');
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (error) {
         logCleanupAudit('STOP_JAIL', jailName, 'FAILED', error);
         errors.push(error as Error);
@@ -527,6 +539,7 @@ export async function cleanupJail(
           1000,
         );
         logCleanupAudit('RELEASE_EPAIR', jailName, 'SUCCESS');
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (error) {
         logCleanupAudit('RELEASE_EPAIR', jailName, 'FAILED', error);
         errors.push(error as Error);
@@ -535,6 +548,7 @@ export async function cleanupJail(
 
     try {
       await sudoExec(['umount', '-f', path.join(jailPath, 'dev')]);
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch {
       // Expected to fail if devfs not mounted
     }
@@ -545,6 +559,7 @@ export async function cleanupJail(
       try {
         await sudoExec(['umount', '-f', targetPath]);
         logCleanupAudit('UNMOUNT_NULLFS', jailName, 'SUCCESS');
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (error) {
         logCleanupAudit('UNMOUNT_NULLFS', jailName, 'FAILED', error);
         errors.push(error as Error);
@@ -565,6 +580,7 @@ export async function cleanupJail(
           3000,
         );
         logCleanupAudit('DESTROY_DATASET', jailName, 'SUCCESS');
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (error) {
         logCleanupAudit('DESTROY_DATASET', jailName, 'FAILED', error);
         errors.push(error as Error);
@@ -575,6 +591,7 @@ export async function cleanupJail(
       try {
         fs.unlinkSync(fstabPath);
         logCleanupAudit('REMOVE_FSTAB', jailName, 'SUCCESS');
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (error) {
         logCleanupAudit('REMOVE_FSTAB', jailName, 'FAILED', error);
         errors.push(error as Error);
@@ -585,11 +602,13 @@ export async function cleanupJail(
       try {
         fs.unlinkSync(confPath);
         logCleanupAudit('REMOVE_CONF', jailName, 'SUCCESS');
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (error) {
         logCleanupAudit('REMOVE_CONF', jailName, 'FAILED', error);
         errors.push(error as Error);
       }
     }
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (unexpectedError) {
     logCleanupAudit(
       'CLEANUP_UNEXPECTED_ERROR',

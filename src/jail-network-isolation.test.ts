@@ -44,6 +44,7 @@ if (isFreeBSD && isRestrictedMode) {
         stdio: 'pipe',
       });
       hasPfTables = true;
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch {
       // pf tables not configured
     }

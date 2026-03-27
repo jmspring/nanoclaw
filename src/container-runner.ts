@@ -259,6 +259,7 @@ export function hashFile(filePath: string): string | null {
   try {
     const content = fs.readFileSync(filePath);
     return createHash('sha256').update(content).digest('hex');
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     return null;
   }

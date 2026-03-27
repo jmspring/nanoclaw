@@ -67,6 +67,7 @@ export async function execInJail(
           stdio: 'pipe',
           timeout: JAIL_QUICK_OP_TIMEOUT,
         });
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch {
         // Jail may have already stopped
       }

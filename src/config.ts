@@ -99,6 +99,7 @@ function isValidTimezone(tz: string): boolean {
   try {
     Intl.DateTimeFormat(undefined, { timeZone: tz });
     return true;
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     return false;
   }
