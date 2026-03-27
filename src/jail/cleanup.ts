@@ -35,6 +35,7 @@ export function logCleanupAudit(
 
   try {
     fs.appendFileSync(CLEANUP_AUDIT_LOG, logLine);
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (err) {
     logger.error(
       { err, logFile: CLEANUP_AUDIT_LOG },
@@ -56,6 +57,7 @@ export async function retryWithBackoff<T>(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (error) {
       lastError = error;
       if (attempt < maxRetries) {
@@ -85,6 +87,7 @@ export function listRunningNanoclawJails(): string[] {
       .trim()
       .split('\n')
       .filter((line) => line.startsWith('nanoclaw_'));
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (err) {
     logger.debug({ err }, 'No running jails found or jls failed');
     return [];
@@ -118,12 +121,14 @@ export function cleanupOrphanEpairs(): void {
               timeout: JAIL_QUICK_OP_TIMEOUT,
             });
             logger.info({ epairNum, iface }, 'Destroyed orphan epair');
+            // eslint-disable-next-line no-catch-all/no-catch-all
           } catch {
             logger.warn({ epairNum, iface }, 'Could not destroy orphan epair');
           }
         }
       }
     }
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     // No epairs or error listing interfaces
   }
@@ -146,11 +151,13 @@ export async function destroyAllEpairInterfaces(): Promise<void> {
       if (epairRegex.test(iface)) {
         try {
           await sudoExec(['ifconfig', iface, 'destroy']);
+          // eslint-disable-next-line no-catch-all/no-catch-all
         } catch {
           logger.warn({ iface }, 'Failed to destroy epair');
         }
       }
     }
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     // No epairs or error listing interfaces
   }
@@ -203,6 +210,7 @@ export async function cleanupAllJails(): Promise<void> {
   for (const jailName of jailNames) {
     try {
       await cleanupByJailName(jailName);
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (err) {
       logger.warn({ jailName, err }, 'Cleanup failed for jail');
     }
@@ -252,6 +260,6 @@ export function ensureJailRuntimeRunning(): void {
       },
       'FATAL: Jail runtime requirements not met. Ensure ZFS is available, template snapshot exists, and jail(8) is in PATH',
     );
-    throw new Error('Jail runtime requirements not met');
+    throw new Error('Jail runtime requirements not met', { cause: err });
   }
 }

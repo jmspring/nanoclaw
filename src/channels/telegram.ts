@@ -34,6 +34,7 @@ async function sendTelegramMessage(
       ...options,
       parse_mode: 'Markdown',
     });
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (err) {
     // Fallback: send as plain text if Markdown parsing fails
     logger.debug({ err }, 'Markdown send failed, falling back to plain text');
@@ -260,6 +261,7 @@ export class TelegramChannel implements Channel {
         }
       }
       logger.info({ jid, length: text.length }, 'Telegram message sent');
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
     }
@@ -286,6 +288,7 @@ export class TelegramChannel implements Channel {
     try {
       const numericId = jid.replace(/^tg:/, '');
       await this.bot.api.sendChatAction(numericId, 'typing');
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (err) {
       logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
     }

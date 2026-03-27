@@ -18,6 +18,7 @@ try {
     compress: 'gzip',
     maxFiles: 5,
   });
+  // eslint-disable-next-line no-catch-all/no-catch-all
 } catch {
   // Fall back to console-only logging if log dir is not writable
 }

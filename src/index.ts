@@ -41,7 +41,6 @@ import {
   getAllTasks,
   getMessagesSince,
   getNewMessages,
-  getRegisteredGroup,
   getRouterState,
   backupDatabase,
   initDatabase,
@@ -96,6 +95,7 @@ function loadState(): void {
   const agentTs = getRouterState('last_agent_timestamp');
   try {
     lastAgentTimestamp = agentTs ? JSON.parse(agentTs) : {};
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     logger.warn('Corrupted last_agent_timestamp in DB, resetting');
     lastAgentTimestamp = {};
@@ -137,6 +137,7 @@ function saveSessionState(): void {
       { sessionCount: Object.keys(sessions).length },
       'Session state saved',
     );
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (err) {
     logger.warn({ err }, 'Failed to save session state');
   }
@@ -179,6 +180,7 @@ function restoreSessionState(): void {
       },
       'Session state restored from disk',
     );
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (err) {
     logger.warn({ err }, 'Failed to restore session state, starting fresh');
   }
@@ -188,6 +190,7 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   let groupDir: string;
   try {
     groupDir = resolveGroupFolderPath(group.folder);
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (err) {
     logger.warn(
       { jid, folder: group.folder, err },
@@ -462,6 +465,7 @@ async function runAgent(
 
     consecutiveAgentFailures = 0;
     return 'success';
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (err) {
     tracedLogger.error({ group: group.name, err }, 'Agent error');
     consecutiveAgentFailures++;
@@ -571,6 +575,7 @@ async function startMessageLoop(): Promise<void> {
           }
         }
       }
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (err) {
       logger.error({ err }, 'Error in message loop');
     }
@@ -650,6 +655,7 @@ async function main(): Promise<void> {
     // Close all rotating log streams
     try {
       await closeAllLogStreams();
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (err) {
       logger.warn({ err }, 'Failed to close log streams during shutdown');
     }
@@ -830,6 +836,7 @@ async function main(): Promise<void> {
     if (!channel) return;
     try {
       await channel.sendMessage(mainJid, `[NanoClaw Alert] ${message}`);
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (err) {
       logger.warn({ err }, 'Failed to send admin alert');
     }

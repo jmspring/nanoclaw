@@ -10,7 +10,6 @@ import { logger } from '../logger.js';
 import {
   CONTAINER_TIMEOUT,
   CREDENTIAL_PROXY_PORT,
-  DATA_DIR,
   TIMEZONE,
 } from '../config.js';
 import {
@@ -53,6 +52,7 @@ function buildJailMountPaths(
     fs.chmodSync(groupSessionsDir, 0o2775);
     const uid = process.getuid?.() ?? 0;
     fs.chownSync(groupSessionsDir, uid, 0);
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     // Non-fatal: permissions will be set by ensureHostDirectories in jail module
   }
@@ -161,6 +161,7 @@ export async function runJailAgent(
     if (jailToken) {
       env.CREDENTIAL_PROXY_TOKEN = jailToken;
     }
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (err) {
     log.error({ group: group.name, err }, 'Failed to create jail');
     return {

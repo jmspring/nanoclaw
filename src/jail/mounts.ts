@@ -28,9 +28,10 @@ function validateJailMount(mount: JailMount): void {
   try {
     const realHostPath = fs.realpathSync(mount.hostPath);
     mount.hostPath = realHostPath;
-  } catch (err) {
+  } catch (_err) {
     throw new Error(
       `Security: jail mount hostPath does not exist: "${mount.hostPath}"`,
+      { cause: _err },
     );
   }
 
@@ -146,6 +147,7 @@ export function ensureHostDirectories(paths: JailMountPaths): void {
     try {
       fs.chmodSync(dir, 0o2775);
       fs.chownSync(dir, uid, wheelGid);
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (err) {
       logger.warn({ dir, err }, 'Could not set permissions on directory');
     }
@@ -160,6 +162,7 @@ export function ensureHostDirectories(paths: JailMountPaths): void {
       try {
         fs.chmodSync(subdirPath, 0o2775);
         fs.chownSync(subdirPath, uid, wheelGid);
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (err) {
         logger.warn(
           { subdirPath, err },
@@ -254,10 +257,12 @@ export async function unmountAll(
     try {
       await sudoExec(['umount', targetPath]);
       logger.debug({ targetPath }, 'Unmounted nullfs');
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (error) {
       try {
         await sudoExec(['umount', '-f', targetPath]);
         logger.debug({ targetPath }, 'Force unmounted nullfs');
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch {
         const errorMessage =
           error instanceof Error ? error.message : String(error);

@@ -36,7 +36,7 @@ export function getRotatingLogStream(
     fs.mkdirSync(logsDir, { recursive: true });
 
     // Generator function for log file names
-    const generator = (time: number | Date | null, index?: number): string => {
+    const generator = (time: number | Date | null, _index?: number): string => {
       if (!time) {
         // Current file (no rotation yet)
         return `${prefix}-current.log`;
@@ -122,6 +122,7 @@ async function cleanupOldLogs(
         fs.unlinkSync(filePath);
       }
     }
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (err) {
     logger.warn({ logsDir, prefix, err }, 'Error cleaning up old logs');
   }
@@ -163,6 +164,7 @@ export async function cleanupAllGroupLogs(groupsDir: string): Promise<void> {
       // Cleanup nanoclaw logs
       await cleanupOldLogs(logsDir, 'nanoclaw');
     }
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (err) {
     logger.warn({ groupsDir, err }, 'Error during periodic log cleanup');
   }

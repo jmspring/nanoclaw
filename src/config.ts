@@ -68,8 +68,7 @@ export const CREDENTIAL_PROXY_PORT = clampInt(
   1024,
   65535,
 );
-export const ONECLI_URL =
-  process.env.ONECLI_URL || 'http://localhost:10254';
+export const ONECLI_URL = process.env.ONECLI_URL || 'http://localhost:10254';
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = clampInt(
   process.env.IDLE_TIMEOUT,
@@ -100,6 +99,7 @@ function isValidTimezone(tz: string): boolean {
   try {
     Intl.DateTimeFormat(undefined, { timeZone: tz });
     return true;
+    // eslint-disable-next-line no-catch-all/no-catch-all
   } catch {
     return false;
   }

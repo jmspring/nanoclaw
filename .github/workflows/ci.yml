@@ -15,11 +15,20 @@ jobs:
           cache: npm
       - run: npm ci
 
+      - name: Security audit
+        run: npm audit --audit-level=moderate
+
       - name: Format check
         run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
 
       - name: Typecheck
         run: npx tsc --noEmit
 
+      - name: Build
+        run: npm run build
+
       - name: Tests
-        run: npx vitest run
+        run: npx vitest run --coverage

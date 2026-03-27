@@ -1,0 +1,41 @@
+freebsd_task:
+  name: "FreeBSD 15.0 - Lint, Build, Test"
+
+  # Trigger on PRs and pushes to main
+  only_if: $CIRRUS_PR != '' || $CIRRUS_BRANCH == 'main'
+
+  freebsd_instance:
+    image_family: freebsd-15-0
+    cpu: 4
+    memory: 8G
+
+  env:
+    HOME: /root
+
+  # Cache node_modules across builds for faster installs
+  node_modules_cache:
+    folder: node_modules
+    fingerprint_script: cat package-lock.json
+    populate_script: npm ci
+
+  install_script:
+    - pkg install -y node24 npm-node24
+    - node --version
+    - npm --version
+
+  # Install dependencies (skipped if cache hit)
+  dependencies_script:
+    - npm ci
+
+  lint_script:
+    - npm run format:check
+    - npm run lint
+
+  typecheck_script:
+    - npx tsc --noEmit
+
+  build_script:
+    - npm run build
+
+  test_script:
+    - npx vitest run

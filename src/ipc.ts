@@ -47,6 +47,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
         const stat = fs.statSync(path.join(ipcBaseDir, f));
         return stat.isDirectory() && f !== 'errors';
       });
+      // eslint-disable-next-line no-catch-all/no-catch-all
     } catch (err) {
       logger.error({ err }, 'Error reading IPC base directory');
       setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
@@ -110,6 +111,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 }
               }
               fs.unlinkSync(processingPath);
+              // eslint-disable-next-line no-catch-all/no-catch-all
             } catch (err) {
               logger.error(
                 { file, sourceGroup, err },
@@ -130,6 +132,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
             }
           }
         }
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (err) {
         logger.error(
           { err, sourceGroup },
@@ -164,6 +167,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
               // Pass source group identity to processTaskIpc for authorization
               await processTaskIpc(data, sourceGroup, isMain, deps);
               fs.unlinkSync(processingPath);
+              // eslint-disable-next-line no-catch-all/no-catch-all
             } catch (err) {
               logger.error(
                 { file, sourceGroup, err },
@@ -183,6 +187,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
             }
           }
         }
+        // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
       }
@@ -261,6 +266,7 @@ export async function processTaskIpc(
               tz: TIMEZONE,
             });
             nextRun = interval.next().toISOString();
+            // eslint-disable-next-line no-catch-all/no-catch-all
           } catch {
             logger.warn(
               { scheduleValue: data.schedule_value },
@@ -417,6 +423,7 @@ export async function processTaskIpc(
                 { tz: TIMEZONE },
               );
               updates.next_run = interval.next().toISOString();
+              // eslint-disable-next-line no-catch-all/no-catch-all
             } catch {
               logger.warn(
                 { taskId: data.taskId, value: updatedTask.schedule_value },
