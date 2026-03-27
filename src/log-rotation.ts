@@ -36,7 +36,7 @@ export function getRotatingLogStream(
     fs.mkdirSync(logsDir, { recursive: true });
 
     // Generator function for log file names
-    const generator = (time: number | Date | null, index?: number): string => {
+    const generator = (time: number | Date | null, _index?: number): string => {
       if (!time) {
         // Current file (no rotation yet)
         return `${prefix}-current.log`;

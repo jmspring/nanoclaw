@@ -10,7 +10,6 @@ import { logger } from '../logger.js';
 import {
   CONTAINER_TIMEOUT,
   CREDENTIAL_PROXY_PORT,
-  DATA_DIR,
   TIMEZONE,
 } from '../config.js';
 import {

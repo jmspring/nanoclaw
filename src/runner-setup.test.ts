@@ -30,7 +30,9 @@ beforeEach(() => {
 describe('getGroupSessionsDir', () => {
   it('returns correct path for a given group folder', () => {
     const result = getGroupSessionsDir('my-group');
-    expect(result).toBe(path.join('/mock/data', 'sessions', 'my-group', '.claude'));
+    expect(result).toBe(
+      path.join('/mock/data', 'sessions', 'my-group', '.claude'),
+    );
   });
 });
 
@@ -69,18 +71,30 @@ describe('ensureGroupSettings', () => {
 describe('syncContainerSkills', () => {
   it('copies skill directories from container/skills/', () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
-    vi.mocked(fs.readdirSync).mockReturnValue(['skill-a', 'skill-b'] as unknown as ReturnType<typeof fs.readdirSync>);
-    vi.mocked(fs.statSync).mockReturnValue({ isDirectory: () => true } as ReturnType<typeof fs.statSync>);
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      'skill-a',
+      'skill-b',
+    ] as unknown as ReturnType<typeof fs.readdirSync>);
+    vi.mocked(fs.statSync).mockReturnValue({
+      isDirectory: () => true,
+    } as ReturnType<typeof fs.statSync>);
     syncContainerSkills('/mock/sessions/.claude');
     expect(fs.cpSync).toHaveBeenCalledTimes(2);
   });
 
   it('skips non-directory entries', () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
-    vi.mocked(fs.readdirSync).mockReturnValue(['file.txt', 'skill-a'] as unknown as ReturnType<typeof fs.readdirSync>);
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      'file.txt',
+      'skill-a',
+    ] as unknown as ReturnType<typeof fs.readdirSync>);
     vi.mocked(fs.statSync)
-      .mockReturnValueOnce({ isDirectory: () => false } as ReturnType<typeof fs.statSync>)
-      .mockReturnValueOnce({ isDirectory: () => true } as ReturnType<typeof fs.statSync>);
+      .mockReturnValueOnce({ isDirectory: () => false } as ReturnType<
+        typeof fs.statSync
+      >)
+      .mockReturnValueOnce({ isDirectory: () => true } as ReturnType<
+        typeof fs.statSync
+      >);
     syncContainerSkills('/mock/sessions/.claude');
     expect(fs.cpSync).toHaveBeenCalledTimes(1);
   });
@@ -93,8 +107,12 @@ describe('syncContainerSkills', () => {
 
   it('catches and ignores per-directory copy errors', () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
-    vi.mocked(fs.readdirSync).mockReturnValue(['skill-a'] as unknown as ReturnType<typeof fs.readdirSync>);
-    vi.mocked(fs.statSync).mockReturnValue({ isDirectory: () => true } as ReturnType<typeof fs.statSync>);
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      'skill-a',
+    ] as unknown as ReturnType<typeof fs.readdirSync>);
+    vi.mocked(fs.statSync).mockReturnValue({
+      isDirectory: () => true,
+    } as ReturnType<typeof fs.statSync>);
     vi.mocked(fs.cpSync).mockImplementation(() => {
       throw new Error('copy failed');
     });

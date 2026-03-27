@@ -252,6 +252,6 @@ export function ensureJailRuntimeRunning(): void {
       },
       'FATAL: Jail runtime requirements not met. Ensure ZFS is available, template snapshot exists, and jail(8) is in PATH',
     );
-    throw new Error('Jail runtime requirements not met');
+    throw new Error('Jail runtime requirements not met', { cause: err });
   }
 }

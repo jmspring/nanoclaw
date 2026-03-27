@@ -28,9 +28,10 @@ function validateJailMount(mount: JailMount): void {
   try {
     const realHostPath = fs.realpathSync(mount.hostPath);
     mount.hostPath = realHostPath;
-  } catch (err) {
+  } catch (_err) {
     throw new Error(
       `Security: jail mount hostPath does not exist: "${mount.hostPath}"`,
+      { cause: _err },
     );
   }
 

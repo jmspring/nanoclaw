@@ -1,7 +1,6 @@
 /**
  * Type definitions for FreeBSD jail runtime.
  */
-import { ChildProcess } from 'child_process';
 
 /** Jail mount specification */
 export interface JailMount {

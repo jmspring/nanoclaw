@@ -94,7 +94,11 @@ describe('OneCLI shim', () => {
 
     it('returns true', async () => {
       const onecli = new OneCLI();
-      const result = await onecli.applyContainerConfig(['docker', 'run', 'img']);
+      const result = await onecli.applyContainerConfig([
+        'docker',
+        'run',
+        'img',
+      ]);
       expect(result).toBe(true);
     });
 
