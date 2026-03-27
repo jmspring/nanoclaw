@@ -37,7 +37,7 @@ interface MetricsData {
 }
 
 /** Global metrics counters */
-let metricsData: MetricsData = {
+const metricsData: MetricsData = {
   activeJails: 0,
   jailCreateTotal: { success: 0, failure: 0 },
   epairUsed: 0,

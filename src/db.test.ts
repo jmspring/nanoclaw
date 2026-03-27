@@ -1,7 +1,7 @@
 import fs from 'fs';
-import os from 'os';
+// os module removed (unused)
 import path from 'path';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
   _initTestDatabase,
@@ -535,6 +535,7 @@ describe('container_config Zod validation', () => {
   it('rejects malformed container_config and returns undefined', () => {
     // Manually insert a row with invalid container_config JSON structure
     // The schema expects additionalMounts to be an array of objects
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const Database = require('better-sqlite3');
     // Use the internal db by going through setRegisteredGroup first then corrupting
     setRegisteredGroup('bad@g.us', {
@@ -545,7 +546,7 @@ describe('container_config Zod validation', () => {
     });
 
     // Corrupt the container_config directly in DB
-    const db = new Database(':memory:');
+    const _db = new Database(':memory:');
     // We can't access the internal db directly, so test via getAllRegisteredGroups
     // Instead, set a containerConfig with invalid additionalMounts type
     setRegisteredGroup('bad2@g.us', {

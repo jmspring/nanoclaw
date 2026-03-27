@@ -49,6 +49,7 @@ function defaultSudoExecSync(
   } catch (error) {
     throw new Error(
       `sudo ${args.join(' ')} failed: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
 }

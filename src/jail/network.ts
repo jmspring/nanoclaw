@@ -7,8 +7,7 @@ import crypto from 'crypto';
 import path from 'path';
 import { logger } from '../logger.js';
 import { DATA_DIR } from '../config.js';
-import { JAIL_QUICK_OP_TIMEOUT } from './config.js';
-import { getSudoExec, getSudoExecSync } from './sudo.js';
+import { getSudoExec } from './sudo.js';
 import { JAIL_CONFIG, MAX_EPAIRS, EPAIR_WARNING_THRESHOLD } from './config.js';
 import type { EpairInfo } from './types.js';
 
@@ -305,6 +304,7 @@ export function validatePfConfiguration(): void {
         '  1. Run the migration script: scripts/switch-network-mode.sh restricted\n' +
         '  2. Or manually configure pf (see etc/pf-nanoclaw.conf)\n' +
         '  3. Or switch to "inherit" mode: export NANOCLAW_JAIL_NETWORK_MODE=inherit',
+      { cause: err },
     );
   }
 }

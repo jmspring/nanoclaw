@@ -68,8 +68,7 @@ export const CREDENTIAL_PROXY_PORT = clampInt(
   1024,
   65535,
 );
-export const ONECLI_URL =
-  process.env.ONECLI_URL || 'http://localhost:10254';
+export const ONECLI_URL = process.env.ONECLI_URL || 'http://localhost:10254';
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = clampInt(
   process.env.IDLE_TIMEOUT,

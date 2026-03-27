@@ -65,7 +65,7 @@ const GROUP_ID_1 = 'test-network-iso-1';
 const GROUP_ID_2 = 'test-network-iso-2';
 
 // Anthropic API IP ranges (from etc/pf-nanoclaw.conf)
-const ANTHROPIC_IP_V4 = '160.79.104.0/21'; // Covers 160.79.104.0 - 160.79.111.255
+const _ANTHROPIC_IP_V4 = '160.79.104.0/21'; // Covers 160.79.104.0 - 160.79.111.255
 const ANTHROPIC_TEST_IP = '160.79.104.1'; // Should be allowed
 
 // DNS servers (from etc/pf-nanoclaw.conf)
@@ -73,7 +73,7 @@ const DNS_GOOGLE = '8.8.8.8';
 const DNS_CLOUDFLARE = '1.1.1.1';
 
 // Blocked hosts for testing
-const BLOCKED_HOST = 'google.com';
+const _BLOCKED_HOST = 'google.com';
 const BLOCKED_IP = '142.250.64.78'; // google.com IP (not in allowlist)
 
 describe.skipIf(!isFreeBSD || !isRestrictedMode || !isRoot || !hasPfTables)(

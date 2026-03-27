@@ -122,11 +122,7 @@ vi.mock('child_process', async () => {
   };
 });
 
-import {
-  runContainerAgent,
-  ContainerOutput,
-  hashFile,
-} from './container-runner.js';
+import { runContainerAgent, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
@@ -210,7 +206,7 @@ describe('agent-runner mount is read-only', () => {
   });
 
   it('mounts agent-runner source as read-only in Docker', async () => {
-    const { spawn } = await import('child_process');
+    const { spawn: _spawn } = await import('child_process');
     const { readonlyMountArgs } = await import('./container-runtime.js');
 
     const resultPromise = runContainerAgent(testGroup, testInput, () => {});

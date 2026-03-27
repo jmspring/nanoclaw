@@ -243,7 +243,7 @@ export async function createJailWithPaths(
 export async function createJail(
   groupId: string,
   mounts: JailMount[] = [],
-  traceId?: string,
+  _traceId?: string,
   tracedLogger?: pino.Logger,
 ): Promise<{ jailName: string; epairInfo: EpairInfo | null }> {
   const sudoExec = getSudoExec();

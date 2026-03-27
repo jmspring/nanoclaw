@@ -18,8 +18,14 @@ jobs:
       - name: Format check
         run: npm run format:check
 
+      - name: Lint
+        run: npm run lint
+
       - name: Typecheck
         run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
 
       - name: Tests
         run: npx vitest run
