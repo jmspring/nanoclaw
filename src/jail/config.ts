@@ -79,7 +79,12 @@ export const JAIL_CONFIG: JailConfig = {
     memoryuse: process.env.NANOCLAW_JAIL_MEMORY_LIMIT || '2G',
     maxproc: process.env.NANOCLAW_JAIL_MAXPROC || '100',
     pcpu: process.env.NANOCLAW_JAIL_PCPU || '80',
+    readbps: process.env.NANOCLAW_JAIL_READBPS || '',
+    writebps: process.env.NANOCLAW_JAIL_WRITEBPS || '',
+    openfiles: process.env.NANOCLAW_JAIL_OPENFILES || '1000',
+    wallclock: process.env.NANOCLAW_JAIL_WALLCLOCK || '',
   },
+  cpuset: process.env.NANOCLAW_JAIL_CPUSET || '',
 };
 
 // Warn if running with unrestricted network access

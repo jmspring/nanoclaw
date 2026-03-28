@@ -321,10 +321,49 @@ async function applyRctlLimits(jailName: string): Promise<void> {
       `jail:${jailName}:maxproc:deny=${limits.maxproc}`,
     ]);
     await sudoExec(['rctl', '-a', `jail:${jailName}:pcpu:deny=${limits.pcpu}`]);
+
+    // Apply optional additional limits (empty string = skip)
+    const optionalLimits: Array<[string, string]> = [
+      ['readbps', limits.readbps],
+      ['writebps', limits.writebps],
+      ['openfiles', limits.openfiles],
+      ['wallclock', limits.wallclock],
+    ];
+    for (const [resource, value] of optionalLimits) {
+      if (value) {
+        await sudoExec([
+          'rctl',
+          '-a',
+          `jail:${jailName}:${resource}:deny=${value}`,
+        ]);
+      }
+    }
+
     logger.info({ jailName, limits }, 'Applied rctl limits');
     // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (error) {
     logger.warn({ jailName, err: error }, 'Could not apply rctl limits');
+  }
+}
+
+/** Apply cpuset pinning to a jail if configured. */
+async function applyCpuset(jailName: string): Promise<void> {
+  if (!JAIL_CONFIG.cpuset) {
+    return;
+  }
+  const sudoExec = getSudoExec();
+  try {
+    await sudoExec(['cpuset', '-l', JAIL_CONFIG.cpuset, '-j', jailName]);
+    logger.info(
+      { jailName, cpuset: JAIL_CONFIG.cpuset },
+      'Applied cpuset pinning',
+    );
+    // eslint-disable-next-line no-catch-all/no-catch-all
+  } catch (error) {
+    logger.warn(
+      { jailName, cpuset: JAIL_CONFIG.cpuset, err: error },
+      'Could not apply cpuset pinning',
+    );
   }
 }
 
@@ -582,6 +621,7 @@ ${networkConfig}
     await sudoExec(['jail', '-f', confPath, '-c', jailName]);
 
     await applyRctlLimits(jailName);
+    await applyCpuset(jailName);
 
     if (JAIL_CONFIG.networkMode === 'restricted' && epairInfo) {
       await configureJailNetwork(jailName, epairInfo);

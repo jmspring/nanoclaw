@@ -68,6 +68,10 @@ export interface ResourceLimits {
   memoryuse: string;
   maxproc: string;
   pcpu: string;
+  readbps: string;
+  writebps: string;
+  openfiles: string;
+  wallclock: string;
 }
 
 /** Jail configuration */
@@ -84,6 +88,7 @@ export interface JailConfig {
   jailIP: string;
   jailNetmask: string;
   resourceLimits: ResourceLimits;
+  cpuset: string;
 }
 
 /** ZFS snapshot information */
