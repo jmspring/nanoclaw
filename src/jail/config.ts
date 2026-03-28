@@ -80,6 +80,7 @@ export const JAIL_CONFIG: JailConfig = {
     maxproc: process.env.NANOCLAW_JAIL_MAXPROC || '100',
     pcpu: process.env.NANOCLAW_JAIL_PCPU || '80',
   },
+  cpuset: process.env.NANOCLAW_JAIL_CPUSET || '',
 };
 
 // Warn if running with unrestricted network access

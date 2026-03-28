@@ -328,6 +328,27 @@ async function applyRctlLimits(jailName: string): Promise<void> {
   }
 }
 
+/** Apply cpuset pinning to a jail if configured. */
+async function applyCpuset(jailName: string): Promise<void> {
+  if (!JAIL_CONFIG.cpuset) {
+    return;
+  }
+  const sudoExec = getSudoExec();
+  try {
+    await sudoExec(['cpuset', '-l', JAIL_CONFIG.cpuset, '-j', jailName]);
+    logger.info(
+      { jailName, cpuset: JAIL_CONFIG.cpuset },
+      'Applied cpuset pinning',
+    );
+    // eslint-disable-next-line no-catch-all/no-catch-all
+  } catch (error) {
+    logger.warn(
+      { jailName, cpuset: JAIL_CONFIG.cpuset, err: error },
+      'Could not apply cpuset pinning',
+    );
+  }
+}
+
 /** Remove rctl resource limits from a jail. */
 export async function removeRctlLimits(jailName: string): Promise<void> {
   const sudoExec = getSudoExec();
@@ -582,6 +603,7 @@ ${networkConfig}
     await sudoExec(['jail', '-f', confPath, '-c', jailName]);
 
     await applyRctlLimits(jailName);
+    await applyCpuset(jailName);
 
     if (JAIL_CONFIG.networkMode === 'restricted' && epairInfo) {
       await configureJailNetwork(jailName, epairInfo);

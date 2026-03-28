@@ -84,6 +84,7 @@ export interface JailConfig {
   jailIP: string;
   jailNetmask: string;
   resourceLimits: ResourceLimits;
+  cpuset: string;
 }
 
 /** ZFS snapshot information */
