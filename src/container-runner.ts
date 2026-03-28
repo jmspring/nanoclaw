@@ -15,6 +15,11 @@ import {
   GROUPS_DIR,
   TIMEZONE,
 } from './config.js';
+import {
+  checkIntegrity,
+  getIntegrityAlertFn,
+  setExpectedHash,
+} from './integrity.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -284,6 +289,33 @@ export async function runContainerAgent(
   const claudeMdPath = path.join(groupDir, 'CLAUDE.md');
   const preHash = hashFile(claudeMdPath);
 
+  // Check pre-run hash against stored baseline
+  const preCheck = checkIntegrity(group.folder, preHash);
+  if (preCheck.status === 'new' && preHash !== null) {
+    // First time seeing this group — store baseline automatically
+    setExpectedHash(group.folder, preHash, 'auto-initial');
+    log.info(
+      { group: group.name, hash: preHash },
+      'Integrity baseline set for new group',
+    );
+  } else if (preCheck.status === 'mismatch') {
+    log.warn(
+      {
+        group: group.name,
+        folder: group.folder,
+        expected: preCheck.expectedHash,
+        actual: preCheck.actualHash,
+      },
+      'CLAUDE.md was modified outside agent run (baseline mismatch). To approve, update the baseline via integrity-hashes.json',
+    );
+    const alertFn = getIntegrityAlertFn();
+    if (alertFn) {
+      alertFn(
+        `CLAUDE.md integrity mismatch in group '${group.name}': file was modified outside an agent run`,
+      ).catch(() => {});
+    }
+  }
+
   // Check runtime FIRST — jail path is completely independent from Docker.
   const runtime = getRuntime();
   let result: ContainerOutput;
@@ -380,6 +412,13 @@ export async function runContainerAgent(
       { group: group.name, folder: group.folder, preHash, postHash },
       'CLAUDE.md was modified during agent run',
     );
+    // Alert operator but do NOT update baseline — operator must approve
+    const alertFn = getIntegrityAlertFn();
+    if (alertFn) {
+      alertFn(
+        `CLAUDE.md was modified during agent run in group '${group.name}'. Review and approve the change by updating integrity-hashes.json`,
+      ).catch(() => {});
+    }
   }
 
   return result;
