@@ -36,6 +36,23 @@ interface MetricsData {
   zfsPoolBytesAvail: number;
 }
 
+/** Per-jail rctl resource metrics */
+interface RctlMetrics {
+  jailName: string;
+  memoryuse: number;
+  maxproc: number;
+  pcpu: number;
+  cputime: number;
+  wallclock: number;
+  openfiles: number;
+}
+
+/** Per-jail rctl metrics (updated by polling) */
+let perJailRctlMetrics: RctlMetrics[] = [];
+
+/** Interval handle for rctl polling */
+let rctlPollInterval: ReturnType<typeof setInterval> | null = null;
+
 /** Global metrics counters */
 const metricsData: MetricsData = {
   activeJails: 0,
@@ -196,10 +213,96 @@ export async function updateMetrics(
 }
 
 /**
+ * Poll rctl for resource usage of all active nanoclaw jails.
+ * Stores results in perJailRctlMetrics for Prometheus export.
+ */
+export async function pollRctlMetrics(): Promise<void> {
+  try {
+    const output = execFileSync('sudo', ['rctl', '-u', 'jail:'], {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      timeout: 5000,
+    });
+
+    const byJail = new Map<string, Partial<RctlMetrics>>();
+
+    for (const line of output.split('\n')) {
+      if (!line.trim()) continue;
+      // Format: jail:<name>:<resource>=<value>
+      const match = line.match(/^jail:([^:]+):(\w+)=(\d+)$/);
+      if (!match) continue;
+
+      const [, jailName, resource, valueStr] = match;
+      if (!jailName.startsWith('nanoclaw_')) continue;
+
+      if (!byJail.has(jailName)) {
+        byJail.set(jailName, { jailName });
+      }
+      const entry = byJail.get(jailName)!;
+      const value = parseInt(valueStr, 10);
+
+      switch (resource) {
+        case 'memoryuse':
+          entry.memoryuse = value;
+          break;
+        case 'maxproc':
+          entry.maxproc = value;
+          break;
+        case 'pcpu':
+          entry.pcpu = value;
+          break;
+        case 'cputime':
+          entry.cputime = value;
+          break;
+        case 'wallclock':
+          entry.wallclock = value;
+          break;
+        case 'openfiles':
+          entry.openfiles = value;
+          break;
+      }
+    }
+
+    perJailRctlMetrics = [...byJail.values()].map((entry) => ({
+      jailName: entry.jailName!,
+      memoryuse: entry.memoryuse ?? 0,
+      maxproc: entry.maxproc ?? 0,
+      pcpu: entry.pcpu ?? 0,
+      cputime: entry.cputime ?? 0,
+      wallclock: entry.wallclock ?? 0,
+      openfiles: entry.openfiles ?? 0,
+    }));
+    // eslint-disable-next-line no-catch-all/no-catch-all
+  } catch {
+    // rctl may not be available (RACCT not enabled in kernel) — not an error
+    logger.debug('rctl polling failed — RACCT may not be enabled');
+    perJailRctlMetrics = [];
+  }
+}
+
+/** Start periodic rctl polling. */
+export function startRctlPolling(intervalMs: number = 15000): void {
+  if (rctlPollInterval) return;
+  logger.info({ intervalMs }, 'Starting rctl polling');
+  pollRctlMetrics();
+  rctlPollInterval = setInterval(() => {
+    pollRctlMetrics();
+  }, intervalMs);
+}
+
+/** Stop rctl polling. */
+export function stopRctlPolling(): void {
+  if (rctlPollInterval) {
+    clearInterval(rctlPollInterval);
+    rctlPollInterval = null;
+  }
+}
+
+/**
  * Format metrics in Prometheus text format.
  * @returns Prometheus-formatted metrics string
  */
-function formatPrometheusMetrics(): string {
+export function formatPrometheusMetrics(): string {
   const lines: string[] = [];
 
   lines.push('# HELP nanoclaw_active_jails Number of active jails');
@@ -227,6 +330,69 @@ function formatPrometheusMetrics(): string {
   );
   lines.push('# TYPE nanoclaw_zfs_pool_bytes_avail gauge');
   lines.push(`nanoclaw_zfs_pool_bytes_avail ${metricsData.zfsPoolBytesAvail}`);
+  lines.push('');
+
+  // Per-jail rctl metrics
+  lines.push(
+    '# HELP nanoclaw_jail_memory_usage_bytes Current memory usage per jail in bytes',
+  );
+  lines.push('# TYPE nanoclaw_jail_memory_usage_bytes gauge');
+  for (const m of perJailRctlMetrics) {
+    lines.push(
+      `nanoclaw_jail_memory_usage_bytes{jail="${m.jailName}"} ${m.memoryuse}`,
+    );
+  }
+  lines.push('');
+
+  lines.push(
+    '# HELP nanoclaw_jail_process_count Current number of processes per jail',
+  );
+  lines.push('# TYPE nanoclaw_jail_process_count gauge');
+  for (const m of perJailRctlMetrics) {
+    lines.push(
+      `nanoclaw_jail_process_count{jail="${m.jailName}"} ${m.maxproc}`,
+    );
+  }
+  lines.push('');
+
+  lines.push(
+    '# HELP nanoclaw_jail_cpu_percent Current CPU usage percentage per jail',
+  );
+  lines.push('# TYPE nanoclaw_jail_cpu_percent gauge');
+  for (const m of perJailRctlMetrics) {
+    lines.push(`nanoclaw_jail_cpu_percent{jail="${m.jailName}"} ${m.pcpu}`);
+  }
+  lines.push('');
+
+  lines.push(
+    '# HELP nanoclaw_jail_cputime_seconds_total Total CPU time consumed per jail',
+  );
+  lines.push('# TYPE nanoclaw_jail_cputime_seconds_total counter');
+  for (const m of perJailRctlMetrics) {
+    lines.push(
+      `nanoclaw_jail_cputime_seconds_total{jail="${m.jailName}"} ${m.cputime}`,
+    );
+  }
+  lines.push('');
+
+  lines.push(
+    '# HELP nanoclaw_jail_wallclock_seconds_total Wall-clock time per jail',
+  );
+  lines.push('# TYPE nanoclaw_jail_wallclock_seconds_total counter');
+  for (const m of perJailRctlMetrics) {
+    lines.push(
+      `nanoclaw_jail_wallclock_seconds_total{jail="${m.jailName}"} ${m.wallclock}`,
+    );
+  }
+  lines.push('');
+
+  lines.push(
+    '# HELP nanoclaw_jail_open_files Current open file descriptors per jail',
+  );
+  lines.push('# TYPE nanoclaw_jail_open_files gauge');
+  for (const m of perJailRctlMetrics) {
+    lines.push(`nanoclaw_jail_open_files{jail="${m.jailName}"} ${m.openfiles}`);
+  }
   lines.push('');
 
   return lines.join('\n');
@@ -289,6 +455,9 @@ export function startMetricsServer(
       { port: config.port, endpoints },
       'Health/metrics server listening on http://127.0.0.1:' + config.port,
     );
+    if (config.metricsEnabled) {
+      startRctlPolling();
+    }
   });
 
   return server;
