@@ -321,6 +321,24 @@ async function applyRctlLimits(jailName: string): Promise<void> {
       `jail:${jailName}:maxproc:deny=${limits.maxproc}`,
     ]);
     await sudoExec(['rctl', '-a', `jail:${jailName}:pcpu:deny=${limits.pcpu}`]);
+
+    // Apply optional additional limits (empty string = skip)
+    const optionalLimits: Array<[string, string]> = [
+      ['readbps', limits.readbps],
+      ['writebps', limits.writebps],
+      ['openfiles', limits.openfiles],
+      ['wallclock', limits.wallclock],
+    ];
+    for (const [resource, value] of optionalLimits) {
+      if (value) {
+        await sudoExec([
+          'rctl',
+          '-a',
+          `jail:${jailName}:${resource}:deny=${value}`,
+        ]);
+      }
+    }
+
     logger.info({ jailName, limits }, 'Applied rctl limits');
     // eslint-disable-next-line no-catch-all/no-catch-all
   } catch (error) {

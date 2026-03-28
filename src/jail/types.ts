@@ -68,6 +68,10 @@ export interface ResourceLimits {
   memoryuse: string;
   maxproc: string;
   pcpu: string;
+  readbps: string;
+  writebps: string;
+  openfiles: string;
+  wallclock: string;
 }
 
 /** Jail configuration */
