@@ -343,6 +343,58 @@ export async function removeRctlLimits(jailName: string): Promise<void> {
   }
 }
 
+/**
+ * Check template version metadata and log it at startup.
+ * Warns if the template is older than 30 days.
+ */
+export function checkTemplateVersion(): void {
+  const templateBase =
+    JAIL_CONFIG.templateDataset.split('/').pop() || 'template';
+  const versionFile = path.join(
+    JAIL_CONFIG.jailsPath,
+    templateBase,
+    'etc',
+    'nanoclaw-template-version',
+  );
+
+  try {
+    if (!fs.existsSync(versionFile)) {
+      logger.warn(
+        { versionFile },
+        'Template version file not found -- rebuild template with latest setup-jail-template.sh',
+      );
+      return;
+    }
+
+    const content = fs.readFileSync(versionFile, 'utf-8');
+    const metadata: Record<string, string> = {};
+    for (const line of content.split('\n')) {
+      const eq = line.indexOf('=');
+      if (eq > 0) {
+        metadata[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+      }
+    }
+
+    logger.info({ templateVersion: metadata }, 'Jail template version');
+
+    // Warn if template is older than 30 days
+    if (metadata.built) {
+      const builtDate = new Date(metadata.built);
+      const ageMs = Date.now() - builtDate.getTime();
+      const ageDays = Math.floor(ageMs / (1000 * 60 * 60 * 24));
+      if (ageDays > 30) {
+        logger.warn(
+          { ageDays, built: metadata.built },
+          'Jail template is older than 30 days -- consider rebuilding with setup-jail-template.sh',
+        );
+      }
+    }
+    // eslint-disable-next-line no-catch-all/no-catch-all
+  } catch (err) {
+    logger.warn({ err, versionFile }, 'Failed to read template version');
+  }
+}
+
 /** Get the credential proxy token for a jail. */
 export function getJailToken(groupId: string): string | undefined {
   return jailTokens.get(groupId);
