@@ -865,6 +865,26 @@ setup_rcd_service() {
 }
 
 # =============================================================================
+# Section 9b: Cron Jobs
+# =============================================================================
+setup_cron_jobs() {
+    print_header "9b" "Cron Jobs"
+
+    CRON_SRC="$NANOCLAW_SRC/etc/cron.d/nanoclaw-snapshots"
+    CRON_DEST="/etc/cron.d/nanoclaw-snapshots"
+
+    if [ ! -f "$CRON_SRC" ]; then
+        log_info "Cron file not found in source — skipping"
+        return 0
+    fi
+
+    log_info "Installing ZFS snapshot cron job..."
+    cp "$CRON_SRC" "$CRON_DEST"
+    chmod 644 "$CRON_DEST"
+    log_success "Cron job installed at $CRON_DEST"
+}
+
+# =============================================================================
 # Section 10: Summary
 # =============================================================================
 print_summary() {
@@ -943,6 +963,7 @@ main() {
     clone_nanoclaw
     install_devfs_rules
     setup_rcd_service
+    setup_cron_jobs
     print_summary
 }
 
