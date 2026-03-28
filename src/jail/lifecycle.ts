@@ -658,6 +658,15 @@ export async function cleanupJail(
       }
     }
 
+    // Destroy nc-* snapshots before dataset destroy to avoid children errors
+    try {
+      const { destroyAllSnapshots } = await import('./snapshots.js');
+      await destroyAllSnapshots(groupId);
+      // eslint-disable-next-line no-catch-all/no-catch-all
+    } catch {
+      // Non-fatal: zfs destroy -r handles children anyway
+    }
+
     if (datasetExists(dataset)) {
       try {
         await retryWithBackoff(

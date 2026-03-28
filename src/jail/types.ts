@@ -86,6 +86,13 @@ export interface JailConfig {
   resourceLimits: ResourceLimits;
 }
 
+/** ZFS snapshot information */
+export interface SnapshotInfo {
+  name: string;
+  creation: string;
+  used: string;
+}
+
 /** Result from sudoExec */
 export interface SudoExecResult {
   stdout: string;

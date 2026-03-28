@@ -219,6 +219,8 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For rollback_workspace
+    snapshotName?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -514,6 +516,61 @@ export async function processTaskIpc(
         );
       }
       break;
+
+    case 'rollback_workspace': {
+      // Jail-only: roll back a group's jail dataset to a snapshot
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized rollback_workspace attempt blocked',
+        );
+        break;
+      }
+
+      try {
+        const { getRuntime } = await import('./container-runtime.js');
+        if (getRuntime() !== 'jail') {
+          logger.warn('rollback_workspace is only available on jail runtime');
+          break;
+        }
+
+        const { rollbackToSnapshot, listSnapshots } =
+          await import('./jail/snapshots.js');
+        const { isJailRunning } = await import('./jail/lifecycle.js');
+        const { getJailName } = await import('./jail/lifecycle.js');
+
+        const targetGroup = data.groupFolder || sourceGroup;
+        const jailName = getJailName(targetGroup);
+
+        if (isJailRunning(jailName)) {
+          logger.error(
+            { jailName, targetGroup },
+            'Cannot rollback: jail is still running',
+          );
+          break;
+        }
+
+        let snapshotName = data.snapshotName as string | undefined;
+        if (!snapshotName) {
+          const snapshots = await listSnapshots(targetGroup);
+          if (snapshots.length === 0) {
+            logger.warn({ targetGroup }, 'No snapshots available for rollback');
+            break;
+          }
+          snapshotName = snapshots[snapshots.length - 1].name;
+        }
+
+        await rollbackToSnapshot(targetGroup, snapshotName);
+        logger.info(
+          { targetGroup, snapshot: snapshotName },
+          'Workspace rollback completed via IPC',
+        );
+        // eslint-disable-next-line no-catch-all/no-catch-all
+      } catch (err) {
+        logger.error({ err }, 'rollback_workspace IPC command failed');
+      }
+      break;
+    }
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');

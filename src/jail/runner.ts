@@ -157,6 +157,17 @@ export async function runJailAgent(
     jailLifecycle.trackJailTempFile(group.folder, '/tmp/dist');
     jailLifecycle.trackJailTempFile(group.folder, '/tmp/input.json');
 
+    // Take a pre-agent snapshot for rollback capability (non-blocking)
+    try {
+      const { createSnapshot, enforceRetentionPolicy } =
+        await import('./snapshots.js');
+      await createSnapshot(group.folder, 'pre-agent');
+      await enforceRetentionPolicy(group.folder);
+      // eslint-disable-next-line no-catch-all/no-catch-all
+    } catch (snapshotErr) {
+      log.warn({ err: snapshotErr }, 'Pre-agent snapshot failed, continuing');
+    }
+
     const jailToken = jailLifecycle.getJailToken(group.folder);
     if (jailToken) {
       env.CREDENTIAL_PROXY_TOKEN = jailToken;
