@@ -572,6 +572,38 @@ export async function processTaskIpc(
       break;
     }
 
+    case 'jail_reset': {
+      // Reset (destroy) a persistent jail for a group
+      try {
+        const { getRuntime } = await import('./container-runtime.js');
+        if (getRuntime() !== 'jail') {
+          logger.warn('jail_reset is only available on jail runtime');
+          break;
+        }
+
+        const targetGroup = data.groupFolder || sourceGroup;
+
+        // Non-main groups can only reset their own jail
+        if (!isMain && targetGroup !== sourceGroup) {
+          logger.warn(
+            { sourceGroup, targetGroup },
+            'Unauthorized jail_reset attempt for another group',
+          );
+          break;
+        }
+
+        const { removePersistentJail, cleanupJail } =
+          await import('./jail/lifecycle.js');
+        removePersistentJail(targetGroup);
+        await cleanupJail(targetGroup);
+        logger.info({ targetGroup }, 'Jail reset completed via IPC');
+        // eslint-disable-next-line no-catch-all/no-catch-all
+      } catch (err) {
+        logger.error({ err }, 'jail_reset IPC command failed');
+      }
+      break;
+    }
+
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
   }

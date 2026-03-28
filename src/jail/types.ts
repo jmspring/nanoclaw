@@ -93,6 +93,17 @@ export interface SnapshotInfo {
   used: string;
 }
 
+/** State for a persistent jail that survives between agent sessions */
+export interface PersistentJailState {
+  groupId: string;
+  jailName: string;
+  mounts: JailMount[];
+  createdAt: number;
+  lastUsedAt: number;
+  sessionCount: number;
+  baselineSnapshot?: string;
+}
+
 /** Result from sudoExec */
 export interface SudoExecResult {
   stdout: string;
