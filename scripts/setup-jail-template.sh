@@ -288,6 +288,24 @@ else
     error "    TypeScript compilation: FAILED"
 fi
 
+# Write template version metadata
+log "Writing template version metadata..."
+TEMPLATE_VERSION=$(date +%Y%m%d-%H%M%S)
+TEMPLATE_BUILT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+TEMPLATE_NODE=$(jexec_cmd node --version)
+TEMPLATE_TSC=$(jexec_cmd npx tsc --version | awk '{print $2}')
+TEMPLATE_CLAUDE=$(jexec_cmd claude --version 2>/dev/null | head -1 || echo "unknown")
+
+cat > "$TEMPLATE_PATH/etc/nanoclaw-template-version" << VERSIONEOF
+version=$TEMPLATE_VERSION
+node=$TEMPLATE_NODE
+tsc=$TEMPLATE_TSC
+claude_code=$TEMPLATE_CLAUDE
+built=$TEMPLATE_BUILT
+VERSIONEOF
+
+log "  Template version: $TEMPLATE_VERSION (node=$TEMPLATE_NODE, tsc=$TEMPLATE_TSC)"
+
 # Stop the temporary jail
 log "Stopping temporary jail..."
 sudo jail -r "$TEMP_JAIL_NAME"
