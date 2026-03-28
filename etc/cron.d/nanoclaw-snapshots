@@ -1,0 +1,7 @@
+# NanoClaw ZFS snapshot policy
+# Recursive snapshot every 4 hours — covers database, groups, workspaces
+0 */4 * * * root zfs snapshot -r zroot/nanoclaw@auto-$(date +\%Y\%m\%d-\%H\%M)
+
+# Prune to keep 42 snapshots (7 days at 4-hour intervals)
+# Runs daily at 03:00 — sorts by name (chronological), keeps newest 42
+0 3 * * * root zfs list -t snapshot -o name -H | grep '@auto-' | sort | head -n -42 | xargs -I{} zfs destroy {}
