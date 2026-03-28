@@ -129,47 +129,143 @@ export async function runJailAgent(
     env.CLAUDE_CODE_OAUTH_TOKEN = 'placeholder';
   }
 
-  log.info(
-    { group: group.name, mountPaths },
-    'Creating jail with semantic paths',
-  );
+  const { JAIL_PERSIST, JAIL_PERSIST_ROLLBACK } = await import('./config.js');
 
-  let jailName: string;
+  let jailName = '';
   let jailMounts: Array<{
     hostPath: string;
     jailPath: string;
     readonly: boolean;
-  }>;
-  try {
-    const result = await jailLifecycle.createJailWithPaths(
-      group.folder,
-      mountPaths,
-      traceId,
-      tracedLogger,
-    );
-    jailName = result.jailName;
-    jailMounts = result.mounts;
+  }> = [];
+  let reusingPersistentJail = false;
 
-    // Use per-jail gateway IP for credential proxy (each jail has its own epair)
-    const hostIP = result.epairInfo?.hostIP ?? jailConfig.jailHostIP;
-    env.ANTHROPIC_BASE_URL = `http://${hostIP}:${CREDENTIAL_PROXY_PORT}`;
+  // Check for existing persistent jail
+  if (JAIL_PERSIST) {
+    const existingJail = jailLifecycle.getPersistentJail(group.folder);
+    if (existingJail) {
+      const running = await jailLifecycle.isJailRunningAsync(
+        existingJail.jailName,
+      );
+      if (running) {
+        log.info(
+          {
+            jailName: existingJail.jailName,
+            sessionCount: existingJail.sessionCount,
+          },
+          'Reusing persistent jail',
+        );
+        jailName = existingJail.jailName;
+        jailMounts = existingJail.mounts;
+        reusingPersistentJail = true;
 
-    jailLifecycle.trackJailTempFile(group.folder, '/tmp/dist');
-    jailLifecycle.trackJailTempFile(group.folder, '/tmp/input.json');
+        // Optionally rollback to baseline snapshot
+        if (JAIL_PERSIST_ROLLBACK && existingJail.baselineSnapshot) {
+          try {
+            await jailLifecycle.stopJail(group.folder);
+            const { rollbackToSnapshot } = await import('./snapshots.js');
+            await rollbackToSnapshot(
+              group.folder,
+              existingJail.baselineSnapshot,
+            );
+            const sudoExec = (await import('./sudo.js')).getSudoExec();
+            const confPath = path.join(
+              jailConfig.jailsPath,
+              `${jailName}.conf`,
+            );
+            await sudoExec(['jail', '-f', confPath, '-c', jailName]);
+            log.info({ jailName }, 'Persistent jail rolled back and restarted');
+            // eslint-disable-next-line no-catch-all/no-catch-all
+          } catch (err) {
+            log.warn(
+              { jailName, err },
+              'Rollback failed, continuing with current state',
+            );
+          }
+        }
 
-    const jailToken = jailLifecycle.getJailToken(group.folder);
-    if (jailToken) {
-      env.CREDENTIAL_PROXY_TOKEN = jailToken;
+        const jailToken = jailLifecycle.getJailToken(group.folder);
+        if (jailToken) {
+          env.CREDENTIAL_PROXY_TOKEN = jailToken;
+        }
+      } else {
+        log.warn(
+          { jailName: existingJail.jailName },
+          'Persistent jail no longer running, recreating',
+        );
+        jailLifecycle.removePersistentJail(group.folder);
+      }
     }
-    // eslint-disable-next-line no-catch-all/no-catch-all
-  } catch (err) {
-    log.error({ group: group.name, err }, 'Failed to create jail');
-    return {
-      status: 'error',
-      result: null,
-      error: `Failed to create jail: ${err instanceof Error ? err.message : String(err)}`,
-      traceId,
-    };
+  }
+
+  if (!reusingPersistentJail) {
+    log.info(
+      { group: group.name, mountPaths },
+      'Creating jail with semantic paths',
+    );
+
+    try {
+      const result = await jailLifecycle.createJailWithPaths(
+        group.folder,
+        mountPaths,
+        traceId,
+        tracedLogger,
+      );
+      jailName = result.jailName;
+      jailMounts = result.mounts;
+
+      // Use per-jail gateway IP for credential proxy (each jail has its own epair)
+      const hostIP = result.epairInfo?.hostIP ?? jailConfig.jailHostIP;
+      env.ANTHROPIC_BASE_URL = `http://${hostIP}:${CREDENTIAL_PROXY_PORT}`;
+
+      jailLifecycle.trackJailTempFile(group.folder, '/tmp/dist');
+      jailLifecycle.trackJailTempFile(group.folder, '/tmp/input.json');
+
+      // Take a pre-agent snapshot for rollback capability (non-blocking)
+      try {
+        const { createSnapshot, enforceRetentionPolicy } =
+          await import('./snapshots.js');
+        await createSnapshot(group.folder, 'pre-agent');
+        await enforceRetentionPolicy(group.folder);
+        // eslint-disable-next-line no-catch-all/no-catch-all
+      } catch (snapshotErr) {
+        log.warn({ err: snapshotErr }, 'Pre-agent snapshot failed, continuing');
+      }
+
+      // Register persistent jail if persistence is enabled
+      if (JAIL_PERSIST) {
+        let baselineSnap: string | undefined;
+        try {
+          const { createSnapshot } = await import('./snapshots.js');
+          baselineSnap = await createSnapshot(group.folder, 'baseline');
+          // eslint-disable-next-line no-catch-all/no-catch-all
+        } catch {
+          log.warn('Could not create baseline snapshot for persistent jail');
+        }
+        jailLifecycle.setPersistentJail(group.folder, {
+          groupId: group.folder,
+          jailName,
+          mounts: jailMounts,
+          createdAt: Date.now(),
+          lastUsedAt: Date.now(),
+          sessionCount: 0,
+          baselineSnapshot: baselineSnap,
+        });
+      }
+
+      const jailToken = jailLifecycle.getJailToken(group.folder);
+      if (jailToken) {
+        env.CREDENTIAL_PROXY_TOKEN = jailToken;
+      }
+      // eslint-disable-next-line no-catch-all/no-catch-all
+    } catch (err) {
+      log.error({ group: group.name, err }, 'Failed to create jail');
+      return {
+        status: 'error',
+        result: null,
+        error: `Failed to create jail: ${err instanceof Error ? err.message : String(err)}`,
+        traceId,
+      };
+    }
   }
 
   const entrypointScript = `
@@ -201,12 +297,21 @@ export async function runJailAgent(
     onProcess,
     onOutput,
     onTimeout: async () => {
+      jailLifecycle.removePersistentJail(group.folder);
       await jailLifecycle.stopJail(group.folder);
-    },
-    onClose: async () => {
       await jailLifecycle.destroyJail(group.folder, jailMounts);
     },
+    onClose: async (_exitCode?: number) => {
+      if (JAIL_PERSIST && _exitCode === 0) {
+        jailLifecycle.updatePersistentJailLastUsed(group.folder);
+        log.info({ jailName }, 'Persistent jail kept alive');
+      } else {
+        jailLifecycle.removePersistentJail(group.folder);
+        await jailLifecycle.destroyJail(group.folder, jailMounts);
+      }
+    },
     onError: async () => {
+      jailLifecycle.removePersistentJail(group.folder);
       await jailLifecycle.destroyJail(group.folder, jailMounts);
     },
     traceId,

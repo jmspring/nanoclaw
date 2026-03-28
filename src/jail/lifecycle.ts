@@ -51,6 +51,90 @@ const jailTokens = new Map<string, string>();
 /** Track per-jail temp directories that need cleanup */
 const jailTempDirs = new Map<string, Set<string>>();
 
+/** Track persistent jails that survive between sessions */
+const persistentJails = new Map<
+  string,
+  import('./types.js').PersistentJailState
+>();
+
+/** Get persistent jail state for a group */
+export function getPersistentJail(
+  groupId: string,
+): import('./types.js').PersistentJailState | undefined {
+  return persistentJails.get(groupId);
+}
+
+/** Store persistent jail state */
+export function setPersistentJail(
+  groupId: string,
+  state: import('./types.js').PersistentJailState,
+): void {
+  persistentJails.set(groupId, state);
+}
+
+/** Remove persistent jail state */
+export function removePersistentJail(groupId: string): void {
+  persistentJails.delete(groupId);
+}
+
+/** Get all persistent jail states */
+export function getAllPersistentJails(): import('./types.js').PersistentJailState[] {
+  return [...persistentJails.values()];
+}
+
+/** Update lastUsedAt and increment sessionCount */
+export function updatePersistentJailLastUsed(groupId: string): void {
+  const state = persistentJails.get(groupId);
+  if (state) {
+    state.lastUsedAt = Date.now();
+    state.sessionCount++;
+  }
+}
+
+/** Idle timeout scanner interval handle */
+let idleTimeoutInterval: ReturnType<typeof setInterval> | null = null;
+
+/** Start scanning for idle persistent jails */
+export function startIdleTimeoutScanner(
+  intervalMs: number = 60000,
+  idleTimeout?: number,
+): void {
+  if (idleTimeoutInterval) return;
+
+  logger.info({ intervalMs }, 'Starting idle timeout scanner');
+
+  idleTimeoutInterval = setInterval(async () => {
+    const timeout =
+      idleTimeout ?? (await import('./config.js')).JAIL_IDLE_TIMEOUT;
+    const now = Date.now();
+    for (const state of getAllPersistentJails()) {
+      if (now - state.lastUsedAt > timeout) {
+        try {
+          logger.info(
+            { jailName: state.jailName, groupId: state.groupId },
+            'Destroying idle persistent jail',
+          );
+          await cleanupJail(state.groupId, state.mounts);
+          // eslint-disable-next-line no-catch-all/no-catch-all
+        } catch (err) {
+          logger.warn(
+            { jailName: state.jailName, err },
+            'Failed to clean up idle persistent jail',
+          );
+        }
+      }
+    }
+  }, intervalMs);
+}
+
+/** Stop the idle timeout scanner */
+export function stopIdleTimeoutScanner(): void {
+  if (idleTimeoutInterval) {
+    clearInterval(idleTimeoutInterval);
+    idleTimeoutInterval = null;
+  }
+}
+
 /** Path to persistent token state file */
 const TOKEN_STATE_FILE = path.join(DATA_DIR, 'jail-tokens.json');
 
@@ -658,6 +742,15 @@ export async function cleanupJail(
       }
     }
 
+    // Destroy nc-* snapshots before dataset destroy to avoid children errors
+    try {
+      const { destroyAllSnapshots } = await import('./snapshots.js');
+      await destroyAllSnapshots(groupId);
+      // eslint-disable-next-line no-catch-all/no-catch-all
+    } catch {
+      // Non-fatal: zfs destroy -r handles children anyway
+    }
+
     if (datasetExists(dataset)) {
       try {
         await retryWithBackoff(
@@ -710,7 +803,9 @@ export async function cleanupJail(
     );
     errors.push(unexpectedError as Error);
   } finally {
-    // Always clean up tokens and tracking, regardless of errors above
+    // Always clean up persistent state, tokens, and tracking
+    removePersistentJail(groupId);
+
     const token = jailTokens.get(groupId);
     if (token) {
       revokeJailToken(token);

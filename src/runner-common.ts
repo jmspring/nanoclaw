@@ -66,7 +66,7 @@ export interface AgentProcessOptions {
   /** Called when the timeout fires. Must stop the process. */
   onTimeout: () => Promise<void>;
   /** Called when the process closes (for cleanup like jail destruction). */
-  onClose: () => Promise<void>;
+  onClose: (exitCode?: number) => Promise<void>;
   /** Called when the process emits 'error' (for cleanup). */
   onError: () => Promise<void>;
   /** Trace ID to include in error responses. */
@@ -253,7 +253,7 @@ export function handleAgentProcess(
 
       // Run cleanup (e.g. jail destruction) before processing result
       try {
-        await onClose();
+        await onClose(code ?? undefined);
         // eslint-disable-next-line no-catch-all/no-catch-all
       } catch (err) {
         log.warn(

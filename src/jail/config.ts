@@ -104,6 +104,23 @@ export const MAX_CONCURRENT_JAILS = Math.min(
   Math.max(1, parseInt(process.env.NANOCLAW_MAX_JAILS || '50', 10) || 50),
 );
 
+/** Whether jails persist between agent invocations (default: false) */
+export const JAIL_PERSIST =
+  process.env.NANOCLAW_JAIL_PERSIST === 'true' ||
+  process.env.NANOCLAW_JAIL_PERSIST === '1';
+
+/** Idle timeout for persistent jails in ms (default: 15 minutes) */
+export const JAIL_IDLE_TIMEOUT = clampInt(
+  process.env.NANOCLAW_JAIL_IDLE_TIMEOUT,
+  900000,
+  60000,
+  86400000,
+);
+
+/** Whether to rollback persistent jails to baseline before reuse (default: true) */
+export const JAIL_PERSIST_ROLLBACK =
+  process.env.NANOCLAW_JAIL_PERSIST_ROLLBACK !== 'false';
+
 /** Jail-native mount layout paths */
 export const JAIL_MOUNT_LAYOUT = {
   project: '/workspace/project',
