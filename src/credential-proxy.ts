@@ -14,6 +14,12 @@ import { createServer, Server } from 'http';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
 
+import {
+  capRightsLimit,
+  isCapsicumAvailable,
+  SOCKET_RIGHTS,
+} from './capsicum.js';
+
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
@@ -235,6 +241,42 @@ export function startCredentialProxy(
 
     server.listen(port, host, () => {
       logger.info({ port, host, authMode }, 'Credential proxy started');
+
+      // Capsicum sandboxing: restrict the listening socket's capabilities
+      if (isCapsicumAvailable()) {
+        try {
+          const addr = server.address();
+          const fd =
+            typeof addr === 'object' && addr !== null
+              ? (server as unknown as { _handle?: { fd?: number } })._handle?.fd
+              : undefined;
+          if (fd !== undefined) {
+            const ok = capRightsLimit(fd, SOCKET_RIGHTS);
+            if (ok) {
+              logger.info(
+                { fd },
+                'Credential proxy: Capsicum rights limited on server fd',
+              );
+            } else {
+              logger.debug(
+                { fd },
+                'Credential proxy: Capsicum capRightsLimit returned false',
+              );
+            }
+          }
+          // eslint-disable-next-line no-catch-all/no-catch-all
+        } catch (err) {
+          logger.warn(
+            { err },
+            'Credential proxy: Capsicum restriction failed, continuing without sandboxing',
+          );
+        }
+      } else {
+        logger.debug(
+          'Credential proxy: Capsicum not available, skipping capability restriction',
+        );
+      }
+
       resolve(server);
     });
 

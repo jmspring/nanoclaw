@@ -22,6 +22,7 @@ import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
+import { AlertManager, createChannelSink, createLogSink } from './alerting.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -86,6 +87,9 @@ const queue = new GroupQueue();
 let consecutiveAgentFailures = 0;
 const AGENT_FAILURE_THRESHOLD = 3;
 let adminAlertFn: ((msg: string) => Promise<void>) | null = null;
+
+/** Structured alert manager (initialized in main) */
+let alertManager: AlertManager | null = null;
 
 /** Path to persistent session state file */
 const SESSION_STATE_FILE = path.join(DATA_DIR, 'session-state.json');
@@ -452,13 +456,19 @@ async function runAgent(
         'Container agent error',
       );
       consecutiveAgentFailures++;
-      if (
-        consecutiveAgentFailures === AGENT_FAILURE_THRESHOLD &&
-        adminAlertFn
-      ) {
-        adminAlertFn(
-          `${AGENT_FAILURE_THRESHOLD} consecutive agent failures detected. Check logs for details.`,
-        );
+      if (consecutiveAgentFailures === AGENT_FAILURE_THRESHOLD) {
+        if (alertManager) {
+          alertManager.fire(
+            'warning',
+            'agent',
+            `${AGENT_FAILURE_THRESHOLD} consecutive agent failures detected`,
+            'Check logs for details.',
+          );
+        } else if (adminAlertFn) {
+          adminAlertFn(
+            `${AGENT_FAILURE_THRESHOLD} consecutive agent failures detected. Check logs for details.`,
+          );
+        }
       }
       return 'error';
     }
@@ -469,10 +479,19 @@ async function runAgent(
   } catch (err) {
     tracedLogger.error({ group: group.name, err }, 'Agent error');
     consecutiveAgentFailures++;
-    if (consecutiveAgentFailures === AGENT_FAILURE_THRESHOLD && adminAlertFn) {
-      adminAlertFn(
-        `${AGENT_FAILURE_THRESHOLD} consecutive agent failures detected. Check logs for details.`,
-      );
+    if (consecutiveAgentFailures === AGENT_FAILURE_THRESHOLD) {
+      if (alertManager) {
+        alertManager.fire(
+          'warning',
+          'agent',
+          `${AGENT_FAILURE_THRESHOLD} consecutive agent failures detected`,
+          'Check logs for details.',
+        );
+      } else if (adminAlertFn) {
+        adminAlertFn(
+          `${AGENT_FAILURE_THRESHOLD} consecutive agent failures detected. Check logs for details.`,
+        );
+      }
     }
     return 'error';
   }
@@ -844,6 +863,12 @@ async function main(): Promise<void> {
 
   // Wire up admin alerting for agent failure tracking
   adminAlertFn = sendAdminAlert;
+
+  // Initialize structured alerting
+  alertManager = new AlertManager();
+  alertManager.registerSink(createChannelSink(sendAdminAlert));
+  alertManager.registerSink(createLogSink());
+  logger.info('AlertManager initialized with channel and log sinks');
 
   // Periodic runtime health checks (ZFS space, template snapshot — jail only)
   let stopHealthChecks: (() => void) | null = null;
